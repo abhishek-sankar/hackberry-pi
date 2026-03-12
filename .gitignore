@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Environment
+.env
+pi/.env
+
+# Build
+.expo/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Pi test artifacts
+pi/test_frame.jpg
+
+# Claude
+.claude/
