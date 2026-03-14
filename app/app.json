@@ -19,7 +19,7 @@
         "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to recognize your speech for hands-free follow-up questions.",
         "NSPhotoLibraryUsageDescription": "HackberryPi needs photo library access so you can test navigation guidance with saved videos."
       },
-      "bundleIdentifier": "com.anonymous.app"
+      "bundleIdentifier": "com.abhisheksankar.app"
     },
     "android": {
       "adaptiveIcon": {

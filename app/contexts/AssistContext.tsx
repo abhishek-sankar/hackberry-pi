@@ -11,6 +11,9 @@ import { AppState, AppStateStatus } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as Speech from "expo-speech";
 import {
+  AVAudioSessionCategory,
+  AVAudioSessionCategoryOptions,
+  AVAudioSessionMode,
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
@@ -61,8 +64,22 @@ let appDebugIdCounter = 0;
 const speechRecognitionOptions = {
   lang: "en-US",
   interimResults: true,
-  continuous: false,
+  continuous: true,
   addsPunctuation: true,
+  iosCategory: {
+    category: AVAudioSessionCategory.playAndRecord,
+    categoryOptions: [
+      AVAudioSessionCategoryOptions.defaultToSpeaker,
+      AVAudioSessionCategoryOptions.allowBluetooth,
+      AVAudioSessionCategoryOptions.allowBluetoothA2DP,
+    ],
+    mode: AVAudioSessionMode.voiceChat,
+  },
+  iosVoiceProcessingEnabled: true,
+  volumeChangeEventOptions: {
+    enabled: true,
+    intervalMillis: 120,
+  },
 };
 
 function parseHazard(text: string, capturedAt: number): HazardState | null {
@@ -127,6 +144,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
   const shouldListenRef = useRef(false);
   const restartRecognitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const consumedFrameId = useRef<number | null>(null);
+  const userInterruptionActiveRef = useRef(false);
 
   const appendDebug = useCallback((event: string, payload: Record<string, unknown> = {}) => {
     setAppDebugEvents((prev) => [
@@ -155,11 +173,26 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const interruptAssistantForUser = useCallback(() => {
+    if (sourceMode !== "pi_live") {
+      return;
+    }
+    if (userInterruptionActiveRef.current) {
+      return;
+    }
+    userInterruptionActiveRef.current = true;
+    Speech.stop();
+    clientRef.current?.cancelResponse();
+    setSpeechState("idle");
+    appendDebug("user_barge_in_detected", { sourceMode });
+  }, [appendDebug, sourceMode]);
+
   const stopRealtime = useCallback(() => {
     if (sourceMode === "pi_live") {
       sendCommand({ type: "command", action: "stop_stream" });
     }
     shouldListenRef.current = false;
+    userInterruptionActiveRef.current = false;
     if (restartRecognitionTimer.current) {
       clearTimeout(restartRecognitionTimer.current);
       restartRecognitionTimer.current = null;
@@ -195,7 +228,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       ...speechRecognitionOptions,
       requiresOnDeviceRecognition: useOnDeviceRecognition,
     });
-  }, [appendDebug]);
+  }, [appendDebug, sourceMode]);
 
   const ensureClient = useCallback(() => {
     if (!clientRef.current) {
@@ -241,6 +274,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
         await startListening();
       } else {
         shouldListenRef.current = false;
+        userInterruptionActiveRef.current = false;
         setMicState("idle");
       }
     },
@@ -337,18 +371,27 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
     setMicState("listening");
   });
 
-  useSpeechRecognitionEvent("end", () => {
-    if (!shouldListenRef.current) {
-      setMicState("ready");
-      return;
-    }
+  useSpeechRecognitionEvent("soundstart", () => {
+    interruptAssistantForUser();
+  });
 
+  useSpeechRecognitionEvent("volumechange", (event) => {
+    if (event.value > 1 && speechState === "speaking") {
+      interruptAssistantForUser();
+    }
+  });
+
+  useSpeechRecognitionEvent("end", () => {
+    shouldListenRef.current = false;
+    if (restartRecognitionTimer.current) {
+      clearTimeout(restartRecognitionTimer.current);
+    }
     restartRecognitionTimer.current = setTimeout(() => {
-      ExpoSpeechRecognitionModule.start({
-        ...speechRecognitionOptions,
-        requiresOnDeviceRecognition:
-          ExpoSpeechRecognitionModule.supportsOnDeviceRecognition(),
-      });
+      if (sourceMode !== "pi_live" || sessionState !== "connected" || micState === "denied") {
+        setMicState((prev) => (prev === "denied" ? prev : "idle"));
+        return;
+      }
+      void startListening();
     }, 250);
   });
 
@@ -360,8 +403,11 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
 
     setPartialTranscript(transcript);
     if (event.isFinal) {
+      shouldListenRef.current = false;
+      userInterruptionActiveRef.current = false;
       ensureClient().sendUserText(transcript);
       appendDebug("user_utterance", { transcript });
+      setPartialTranscript("");
     }
   });
 
@@ -370,6 +416,8 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       error: event.error,
       message: event.message,
     });
+    shouldListenRef.current = false;
+    userInterruptionActiveRef.current = false;
     setMicState(event.error === "not-allowed" ? "denied" : "error");
   });
 

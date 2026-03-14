@@ -152,6 +152,12 @@ export class RealtimeSessionClient {
     this.flushPendingFrame();
   }
 
+  cancelResponse() {
+    this.send({ type: "response.cancel" });
+    this.responseInFlight = false;
+    this.partialText = "";
+  }
+
   sendUserText(text: string) {
     const trimmed = text.trim();
     if (!trimmed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -159,9 +165,7 @@ export class RealtimeSessionClient {
     }
 
     if (this.responseInFlight) {
-      this.send({ type: "response.cancel" });
-      this.responseInFlight = false;
-      this.partialText = "";
+      this.cancelResponse();
     }
 
     this.send({
