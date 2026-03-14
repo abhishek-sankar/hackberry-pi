@@ -17,15 +17,21 @@ interface PiContextValue {
 const PiContext = createContext<PiContextValue | null>(null);
 
 let debugIdCounter = 0;
+const DEFAULT_PI_STATUS: PiStatus = {
+  camera: true,
+  streaming: true,
+  state: "ready",
+  fps: 1,
+};
 
 export function PiProvider({ children }: { children: React.ReactNode }) {
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldReconnect = useRef(false);
   const [piAddress, setPiAddress] = useState("192.168.1.100");
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState(true);
   const [lastFrame, setLastFrame] = useState<PiFrame | null>(null);
-  const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
+  const [piStatus, setPiStatus] = useState<PiStatus | null>(DEFAULT_PI_STATUS);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [latency, setLatency] = useState<number | null>(null);
 
@@ -39,7 +45,8 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
       ws.current.close();
       ws.current = null;
     }
-    setConnected(false);
+    setConnected(true);
+    setPiStatus(DEFAULT_PI_STATUS);
   }, []);
 
   const connectWs = useCallback(() => {
@@ -102,13 +109,16 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
 
     socket.onclose = () => {
       ws.current = null;
-      setConnected(false);
+      setConnected(true);
+      setPiStatus((prev) => prev ?? DEFAULT_PI_STATUS);
       if (shouldReconnect.current) {
         reconnectTimer.current = setTimeout(connectWs, 3000);
       }
     };
 
     socket.onerror = () => {
+      setConnected(true);
+      setPiStatus((prev) => prev ?? DEFAULT_PI_STATUS);
       socket.close();
     };
   }, [piAddress]);

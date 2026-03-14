@@ -5,7 +5,7 @@ import { usePi } from "../../contexts/PiContext";
 
 export default function DebugScreen() {
   const { debugEvents, connected, latency, piStatus } = usePi();
-  const { appDebugEvents, micState, sessionState, sourceMode, speechState } = useAssist();
+  const { appDebugEvents, micState, sessionState, speechState } = useAssist();
   const mergedEvents = useMemo(
     () => [...debugEvents, ...appDebugEvents].sort((a, b) => b.timestamp - a.timestamp),
     [appDebugEvents, debugEvents]
@@ -37,28 +37,26 @@ export default function DebugScreen() {
         </View>
       </View>
 
-      {piStatus && (
-        <View style={styles.subsystemRow}>
-          <Text style={[styles.badge, piStatus.camera && styles.badgeOk]}>
-            CAM {piStatus.camera ? "OK" : "OFF"}
-          </Text>
-          <Text style={[styles.badge, piStatus.streaming && styles.badgeOk]}>
-            PI {piStatus.streaming ? "LIVE" : "IDLE"}
-          </Text>
-          <Text style={[styles.badge, sessionState === "connected" && styles.badgeOk]}>
-            AI {sessionState.toUpperCase()}
-          </Text>
-          <Text style={[styles.badge, micState === "listening" && styles.badgeOk]}>
-            MIC {micState.toUpperCase()}
-          </Text>
-          <Text style={[styles.badge, speechState === "speaking" && styles.badgeOk]}>
-            VOX {speechState.toUpperCase()}
-          </Text>
-        </View>
-      )}
+      <View style={styles.subsystemRow}>
+        <Text style={[styles.badge, piStatus?.camera && styles.badgeOk]}>
+          CAM {piStatus?.camera ? "OK" : "OFF"}
+        </Text>
+        <Text style={[styles.badge, piStatus?.streaming && styles.badgeOk]}>
+          PI {piStatus?.streaming ? "LIVE" : "IDLE"}
+        </Text>
+        <Text style={[styles.badge, sessionState === "connected" && styles.badgeOk]}>
+          AI {sessionState.toUpperCase()}
+        </Text>
+        <Text style={[styles.badge, micState === "listening" && styles.badgeOk]}>
+          MIC {micState.toUpperCase()}
+        </Text>
+        <Text style={[styles.badge, speechState === "speaking" && styles.badgeOk]}>
+          VOX {speechState.toUpperCase()}
+        </Text>
+      </View>
 
       <View style={styles.modeRow}>
-        <Text style={styles.modeLabel}>Mode: {sourceMode}</Text>
+        <Text style={styles.modeLabel}>Mode: live</Text>
       </View>
 
       {selectedEvent && (

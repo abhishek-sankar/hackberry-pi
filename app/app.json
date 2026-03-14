@@ -15,6 +15,7 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to use the rear camera for live navigation guidance.",
         "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone for hands-free navigation help.",
         "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to recognize your speech for hands-free follow-up questions.",
         "NSPhotoLibraryUsageDescription": "HackberryPi needs photo library access so you can test navigation guidance with saved videos."
@@ -29,7 +30,9 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "permissions": []
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -38,6 +41,12 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to use the rear camera for live navigation guidance."
+        }
+      ],
       "expo-video",
       [
         "expo-speech-recognition",

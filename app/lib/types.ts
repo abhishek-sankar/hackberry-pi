@@ -1,12 +1,15 @@
-export interface PiFrame {
-  type: "frame";
+export interface VisionFrame {
   data: string;
-  timestamp: number;
   frameId: number;
   capturedAt: number;
   width: number;
   height: number;
   sizeBytes: number;
+}
+
+export interface PiFrame extends VisionFrame {
+  type: "frame";
+  timestamp: number;
 }
 
 export interface PiStatus {
@@ -37,7 +40,7 @@ export type AppCommand =
   | { type: "command"; action: "stop_stream" }
   | { type: "command"; action: "set_stream_config"; fps: number };
 
-export type SourceMode = "pi_live" | "video_replay";
+export type SourceMode = "phone_live" | "video_replay";
 export type SessionState = "idle" | "connecting" | "connected" | "error";
 export type SpeechState = "idle" | "speaking" | "error";
 export type MicState = "idle" | "requesting" | "ready" | "listening" | "denied" | "error";

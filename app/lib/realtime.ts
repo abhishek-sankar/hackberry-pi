@@ -45,7 +45,7 @@ function extractTextFromResponseDone(event: Record<string, any>): string {
 export class RealtimeSessionClient {
   private ws: WebSocket | null = null;
   private readonly callbacks: RealtimeCallbacks;
-  private sourceMode: SourceMode = "pi_live";
+  private sourceMode: SourceMode = "phone_live";
   private responseInFlight = false;
   private pendingFrame: FrameInput | null = null;
   private partialText = "";

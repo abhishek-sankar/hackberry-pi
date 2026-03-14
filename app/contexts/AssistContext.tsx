@@ -17,7 +17,7 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
-import { DEFAULT_PI_STREAM_FPS, MAX_FRAME_AGE_MS, OPENAI_API_KEY } from "../lib/config";
+import { MAX_FRAME_AGE_MS, OPENAI_API_KEY } from "../lib/config";
 import { RealtimeSessionClient } from "../lib/realtime";
 import type {
   DebugEvent,
@@ -27,8 +27,8 @@ import type {
   SessionState,
   SourceMode,
   SpeechState,
+  VisionFrame,
 } from "../lib/types";
-import { usePi } from "./PiContext";
 
 interface AssistContextValue {
   hasApiKey: boolean;
@@ -36,31 +36,27 @@ interface AssistContextValue {
   sessionState: SessionState;
   speechState: SpeechState;
   micState: MicState;
+  isLiveActive: boolean;
   lastFrameAgeMs: number | null;
   lastTranscript: string | null;
   partialTranscript: string;
   lastHazard: HazardState | null;
   selectedVideo: PickedVideoAsset | null;
   appDebugEvents: DebugEvent[];
-  startPiAssist: () => void;
-  stopPiAssist: () => void;
+  startLiveAssist: () => void;
+  stopLiveAssist: () => void;
   startReplayAssist: () => void;
   stopReplayAssist: () => void;
   clearHazard: () => void;
   pickVideo: () => Promise<void>;
-  ingestReplayFrame: (frame: {
-    data: string;
-    capturedAt: number;
-    frameId: number;
-    width: number;
-    height: number;
-    sizeBytes: number;
-  }) => void;
+  ingestLiveFrame: (frame: VisionFrame) => void;
+  ingestReplayFrame: (frame: VisionFrame) => void;
 }
 
 const AssistContext = createContext<AssistContextValue | null>(null);
 
 let appDebugIdCounter = 0;
+const ENABLE_LIVE_SPEECH_RECOGNITION = false;
 const speechRecognitionOptions = {
   lang: "en-US",
   interimResults: true,
@@ -82,12 +78,22 @@ const speechRecognitionOptions = {
   },
 };
 
+const ACTION_PATTERN = /ACTION:\s*(WALK|WAIT|PAUSE_LOOK|CROSSING_PREP)\b([\s\S]*)/i;
+
+function sanitizeGuidanceText(text: string): string {
+  return text
+    .replace(/ACTION:\s*(WALK|WAIT|PAUSE_LOOK|CROSSING_PREP)\b[:\-\s]*/gi, "")
+    .replace(/\b(ALERT|CROSSING):\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function parseHazard(text: string, capturedAt: number): HazardState | null {
   const alertMatch = text.match(/ALERT:\s*([^\n]+)/i);
   if (alertMatch?.[1]) {
     return {
       category: "hazard",
-      text: alertMatch[1].trim(),
+      text: sanitizeGuidanceText(alertMatch[1]),
       isUrgent: true,
       capturedAt,
     };
@@ -97,16 +103,16 @@ function parseHazard(text: string, capturedAt: number): HazardState | null {
   if (crossingMatch?.[1]) {
     return {
       category: "crossing",
-      text: crossingMatch[1].trim(),
+      text: sanitizeGuidanceText(crossingMatch[1]),
       isUrgent: false,
       capturedAt,
     };
   }
 
-  const actionMatch = text.match(/ACTION:\s*(WALK|WAIT|PAUSE_LOOK|CROSSING_PREP)\s*(.*)/i);
+  const actionMatch = text.match(ACTION_PATTERN);
   if (actionMatch) {
     const action = actionMatch[1].toUpperCase();
-    const guidance = actionMatch[2]?.trim() || action;
+    const guidance = sanitizeGuidanceText(actionMatch[2] ?? "") || action;
     if (action === "WAIT" || action === "PAUSE_LOOK") {
       return {
         category: "hazard",
@@ -129,11 +135,11 @@ function parseHazard(text: string, capturedAt: number): HazardState | null {
 }
 
 export function AssistProvider({ children }: { children: React.ReactNode }) {
-  const { lastFrame, sendCommand } = usePi();
-  const [sourceMode, setSourceMode] = useState<SourceMode>("pi_live");
+  const [sourceMode, setSourceMode] = useState<SourceMode>("phone_live");
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [speechState, setSpeechState] = useState<SpeechState>("idle");
   const [micState, setMicState] = useState<MicState>("idle");
+  const [isLiveActive, setIsLiveActive] = useState(false);
   const [lastFrameAgeMs, setLastFrameAgeMs] = useState<number | null>(null);
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
   const [partialTranscript, setPartialTranscript] = useState("");
@@ -174,7 +180,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const interruptAssistantForUser = useCallback(() => {
-    if (sourceMode !== "pi_live") {
+    if (sourceMode !== "phone_live") {
       return;
     }
     if (userInterruptionActiveRef.current) {
@@ -188,11 +194,10 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
   }, [appendDebug, sourceMode]);
 
   const stopRealtime = useCallback(() => {
-    if (sourceMode === "pi_live") {
-      sendCommand({ type: "command", action: "stop_stream" });
-    }
+    console.info("[assist-context] stop realtime");
     shouldListenRef.current = false;
     userInterruptionActiveRef.current = false;
+    consumedFrameId.current = null;
     if (restartRecognitionTimer.current) {
       clearTimeout(restartRecognitionTimer.current);
       restartRecognitionTimer.current = null;
@@ -207,36 +212,54 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
     setSessionState("idle");
     setSpeechState("idle");
     setMicState((prev) => (prev === "denied" ? prev : "idle"));
-  }, [sendCommand, sourceMode]);
+  }, []);
 
   const startListening = useCallback(async () => {
+    console.info("[assist-context] start listening: begin");
     shouldListenRef.current = true;
     setMicState("requesting");
-    const useOnDeviceRecognition =
-      ExpoSpeechRecognitionModule.supportsOnDeviceRecognition();
-    const permission = useOnDeviceRecognition
-      ? await ExpoSpeechRecognitionModule.requestMicrophonePermissionsAsync()
-      : await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-    if (!permission.granted) {
-      setMicState("denied");
-      appendDebug("mic_permission_denied");
-      return;
-    }
+    try {
+      const useOnDeviceRecognition =
+        ExpoSpeechRecognitionModule.supportsOnDeviceRecognition();
+      console.info("[assist-context] start listening: permission request", {
+        useOnDeviceRecognition,
+      });
+      const permission = useOnDeviceRecognition
+        ? await ExpoSpeechRecognitionModule.requestMicrophonePermissionsAsync()
+        : await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        console.info("[assist-context] start listening: permission denied");
+        setMicState("denied");
+        appendDebug("mic_permission_denied");
+        return;
+      }
 
-    setMicState("ready");
-    ExpoSpeechRecognitionModule.start({
-      ...speechRecognitionOptions,
-      requiresOnDeviceRecognition: useOnDeviceRecognition,
-    });
-  }, [appendDebug, sourceMode]);
+      setMicState("ready");
+      console.info("[assist-context] start listening: module start");
+      ExpoSpeechRecognitionModule.start({
+        ...speechRecognitionOptions,
+        requiresOnDeviceRecognition: useOnDeviceRecognition,
+      });
+      console.info("[assist-context] start listening: started");
+    } catch (error) {
+      console.error("[assist-context] start listening failed", error);
+      appendDebug("speech_recognition_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      setMicState("error");
+    }
+  }, [appendDebug]);
 
   const ensureClient = useCallback(() => {
     if (!clientRef.current) {
       clientRef.current = new RealtimeSessionClient({
         onSessionState: setSessionState,
-        onPartialText: setPartialTranscript,
+        onPartialText: (text) => {
+          setPartialTranscript(sanitizeGuidanceText(text));
+        },
         onResponse: (text, meta) => {
-          setLastTranscript(text);
+          const spokenText = sanitizeGuidanceText(text);
+          setLastTranscript(spokenText);
           setPartialTranscript("");
           if (meta.capturedAt) {
             setLastFrameAgeMs(Math.round(Date.now() - meta.capturedAt * 1000));
@@ -248,7 +271,9 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
             latencyMs: meta.latencyMs,
             text,
           });
-          speakGuidance(text, Boolean(hazard?.isUrgent));
+          if (spokenText) {
+            speakGuidance(spokenText, Boolean(hazard?.isUrgent));
+          }
         },
         onError: (message) => {
           appendDebug("realtime_error", { message });
@@ -263,37 +288,45 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
 
   const startSession = useCallback(
     async (mode: SourceMode) => {
-      if (mode !== "pi_live") {
-        sendCommand({ type: "command", action: "stop_stream" });
-      }
+      console.info("[assist-context] start session", { mode });
+      consumedFrameId.current = null;
       const client = ensureClient();
       setSourceMode(mode);
       client.setSourceMode(mode);
+      console.info("[assist-context] realtime connect: begin");
       client.connect(mode);
-      if (mode === "pi_live") {
-        await startListening();
+      console.info("[assist-context] realtime connect: initiated");
+      if (mode === "phone_live") {
+        if (ENABLE_LIVE_SPEECH_RECOGNITION) {
+          await startListening();
+        } else {
+          console.info("[assist-context] live speech recognition disabled");
+          shouldListenRef.current = false;
+          userInterruptionActiveRef.current = false;
+          setMicState("idle");
+        }
       } else {
         shouldListenRef.current = false;
         userInterruptionActiveRef.current = false;
         setMicState("idle");
       }
     },
-    [ensureClient, sendCommand, startListening]
+    [ensureClient, startListening]
   );
 
-  const startPiAssist = useCallback(() => {
-    sendCommand({ type: "command", action: "set_stream_config", fps: DEFAULT_PI_STREAM_FPS });
-    sendCommand({ type: "command", action: "start_stream" });
-    void startSession("pi_live");
-  }, [sendCommand, startSession]);
+  const startLiveAssist = useCallback(() => {
+    setIsLiveActive(true);
+    void startSession("phone_live");
+  }, [startSession]);
 
-  const stopPiAssist = useCallback(() => {
-    sendCommand({ type: "command", action: "stop_stream" });
+  const stopLiveAssist = useCallback(() => {
+    setIsLiveActive(false);
     stopRealtime();
-    setSourceMode("pi_live");
-  }, [sendCommand, stopRealtime]);
+    setSourceMode("phone_live");
+  }, [stopRealtime]);
 
   const startReplayAssist = useCallback(() => {
+    setIsLiveActive(false);
     void startSession("video_replay");
   }, [startSession]);
 
@@ -335,27 +368,25 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
     });
   }, [appendDebug]);
 
-  const ingestReplayFrame = useCallback(
-    (frame: {
-      data: string;
-      capturedAt: number;
-      frameId: number;
-      width: number;
-      height: number;
-      sizeBytes: number;
-    }) => {
-      if (sourceMode !== "video_replay" || sessionState !== "connected") {
+  const ingestVisualFrame = useCallback(
+    (frame: VisionFrame, expectedMode: SourceMode, staleEvent: string, ingestedEvent: string) => {
+      if (sourceMode !== expectedMode || sessionState !== "connected") {
         return;
       }
 
+      if (frame.frameId === consumedFrameId.current) {
+        return;
+      }
+
+      consumedFrameId.current = frame.frameId;
       const ageMs = Date.now() - frame.capturedAt * 1000;
       setLastFrameAgeMs(Math.round(ageMs));
       if (ageMs > MAX_FRAME_AGE_MS) {
-        appendDebug("replay_frame_dropped_stale", { frameId: frame.frameId, ageMs });
+        appendDebug(staleEvent, { frameId: frame.frameId, ageMs });
         return;
       }
 
-      appendDebug("replay_frame_ingested", {
+      appendDebug(ingestedEvent, {
         frameId: frame.frameId,
         ageMs,
         width: frame.width,
@@ -365,6 +396,25 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       ensureClient().sendVisualFrame(frame);
     },
     [appendDebug, ensureClient, sessionState, sourceMode]
+  );
+
+  const ingestLiveFrame = useCallback(
+    (frame: VisionFrame) => {
+      ingestVisualFrame(frame, "phone_live", "live_frame_dropped_stale", "live_frame_ingested");
+    },
+    [ingestVisualFrame]
+  );
+
+  const ingestReplayFrame = useCallback(
+    (frame: VisionFrame) => {
+      ingestVisualFrame(
+        frame,
+        "video_replay",
+        "replay_frame_dropped_stale",
+        "replay_frame_ingested"
+      );
+    },
+    [ingestVisualFrame]
   );
 
   useSpeechRecognitionEvent("start", () => {
@@ -387,7 +437,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(restartRecognitionTimer.current);
     }
     restartRecognitionTimer.current = setTimeout(() => {
-      if (sourceMode !== "pi_live" || sessionState !== "connected" || micState === "denied") {
+      if (sourceMode !== "phone_live" || sessionState !== "connected" || micState === "denied") {
         setMicState((prev) => (prev === "denied" ? prev : "idle"));
         return;
       }
@@ -422,28 +472,9 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
   });
 
   useEffect(() => {
-    if (sourceMode !== "pi_live" || sessionState !== "connected" || !lastFrame) {
-      return;
-    }
-
-    if (lastFrame.frameId === consumedFrameId.current) {
-      return;
-    }
-
-    consumedFrameId.current = lastFrame.frameId;
-    const ageMs = Date.now() - lastFrame.capturedAt * 1000;
-    setLastFrameAgeMs(Math.round(ageMs));
-    if (ageMs > MAX_FRAME_AGE_MS) {
-      appendDebug("pi_frame_dropped_stale", { frameId: lastFrame.frameId, ageMs });
-      return;
-    }
-
-    ensureClient().sendVisualFrame(lastFrame);
-  }, [appendDebug, ensureClient, lastFrame, sessionState, sourceMode]);
-
-  useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
       if (state !== "active") {
+        setIsLiveActive(false);
         stopRealtime();
       }
     });
@@ -466,24 +497,28 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       sessionState,
       speechState,
       micState,
+      isLiveActive,
       lastFrameAgeMs,
       lastTranscript,
       partialTranscript,
       lastHazard,
       selectedVideo,
       appDebugEvents,
-      startPiAssist,
-      stopPiAssist,
+      startLiveAssist,
+      stopLiveAssist,
       startReplayAssist,
       stopReplayAssist,
       clearHazard,
       pickVideo,
+      ingestLiveFrame,
       ingestReplayFrame,
     }),
     [
       appDebugEvents,
       clearHazard,
+      ingestLiveFrame,
       ingestReplayFrame,
+      isLiveActive,
       lastFrameAgeMs,
       lastHazard,
       lastTranscript,
@@ -494,9 +529,9 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       sessionState,
       sourceMode,
       speechState,
-      startPiAssist,
+      startLiveAssist,
       startReplayAssist,
-      stopPiAssist,
+      stopLiveAssist,
       stopReplayAssist,
     ]
   );

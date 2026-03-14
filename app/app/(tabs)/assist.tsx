@@ -1,12 +1,19 @@
-import { useEffect, useRef } from "react";
-import { Image, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import * as Haptics from "expo-haptics";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
+import { DEFAULT_LIVE_CAPTURE_INTERVAL_MS } from "../../lib/config";
 import { useAssist } from "../../contexts/AssistContext";
-import { usePi } from "../../contexts/PiContext";
+
+type CameraViewRef = React.ComponentRef<typeof CameraView>;
 
 export default function AssistScreen() {
-  const { lastFrame, connected, latency } = usePi();
+  const isFocused = useIsFocused();
+  const [permission, requestPermission] = useCameraPermissions();
   const {
+    hasApiKey,
+    isLiveActive,
     lastHazard,
     lastTranscript,
     partialTranscript,
@@ -14,15 +21,96 @@ export default function AssistScreen() {
     sessionState,
     micState,
     lastFrameAgeMs,
-    startPiAssist,
-    stopPiAssist,
+    startLiveAssist,
+    stopLiveAssist,
     clearHazard,
+    ingestLiveFrame,
   } = useAssist();
+  const cameraRef = useRef<CameraViewRef | null>(null);
   const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const captureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastHapticRef = useRef<{ key: string; at: number } | null>(null);
+  const captureInFlightRef = useRef(false);
+  const frameIdRef = useRef(0);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraMountError, setCameraMountError] = useState<string | null>(null);
+  const [lastCaptureSize, setLastCaptureSize] = useState<{ width: number; height: number } | null>(
+    null
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      setCameraReady(false);
+      setCameraMountError(null);
+      if (!hasApiKey) {
+        stopLiveAssist();
+        return undefined;
+      }
+
+      if (!permission?.granted && permission?.canAskAgain !== false) {
+        void requestPermission();
+      }
+
+      return () => {
+        stopLiveAssist();
+      };
+    }, [hasApiKey, permission?.canAskAgain, requestPermission, stopLiveAssist])
+  );
 
   useEffect(() => {
+    if (!isFocused || !hasApiKey || !permission?.granted || !cameraReady || cameraMountError) {
+      if (sessionStartTimerRef.current) {
+        clearTimeout(sessionStartTimerRef.current);
+        sessionStartTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (!isLiveActive) {
+      console.info("[assist] camera ready, scheduling live session start");
+      sessionStartTimerRef.current = setTimeout(() => {
+        console.info("[assist] starting live session");
+        startLiveAssist();
+      }, 750);
+    }
+
+    return () => {
+      if (sessionStartTimerRef.current) {
+        clearTimeout(sessionStartTimerRef.current);
+        sessionStartTimerRef.current = null;
+      }
+    };
+  }, [
+    cameraMountError,
+    cameraReady,
+    hasApiKey,
+    isFocused,
+    isLiveActive,
+    permission?.granted,
+    startLiveAssist,
+  ]);
+
+  useEffect(() => {
+    if (lastHazard) {
+      const hapticKey = `${lastHazard.category}:${lastHazard.text}`;
+      const now = Date.now();
+      const shouldNotify =
+        !lastHapticRef.current ||
+        lastHapticRef.current.key !== hapticKey ||
+        now - lastHapticRef.current.at > 6000;
+
+      if (shouldNotify) {
+        lastHapticRef.current = { key: hapticKey, at: now };
+        if (lastHazard.isUrgent) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        } else {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        }
+      }
+    }
+
     if (lastHazard?.isUrgent) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       if (alertTimerRef.current) {
         clearTimeout(alertTimerRef.current);
       }
@@ -35,6 +123,112 @@ export default function AssistScreen() {
       }
     };
   }, [clearHazard, lastHazard]);
+
+  useEffect(() => {
+    if (
+      !isFocused ||
+      !permission?.granted ||
+      !cameraReady ||
+      cameraMountError !== null ||
+      !isLiveActive ||
+      sessionState !== "connected" ||
+      !cameraRef.current
+    ) {
+      if (captureTimerRef.current) {
+        clearTimeout(captureTimerRef.current);
+        captureTimerRef.current = null;
+      }
+      captureInFlightRef.current = false;
+      return;
+    }
+
+    const captureNextFrame = () => {
+      if (!cameraRef.current || captureInFlightRef.current) {
+        captureTimerRef.current = setTimeout(captureNextFrame, DEFAULT_LIVE_CAPTURE_INTERVAL_MS);
+        return;
+      }
+
+      console.info("[assist] capturing live frame");
+      captureInFlightRef.current = true;
+      void cameraRef.current
+        .takePictureAsync({
+          base64: true,
+          quality: 0.35,
+          shutterSound: false,
+        })
+        .then((picture) => {
+          if (!picture?.base64) {
+            console.info("[assist] capture returned without base64");
+            return;
+          }
+
+          const width = picture.width ?? 0;
+          const height = picture.height ?? 0;
+          setLastCaptureSize({ width, height });
+          frameIdRef.current += 1;
+          console.info("[assist] live frame ready", {
+            frameId: frameIdRef.current,
+            width,
+            height,
+          });
+          ingestLiveFrame({
+            data: picture.base64,
+            capturedAt: Date.now() / 1000,
+            frameId: frameIdRef.current,
+            width,
+            height,
+            sizeBytes: Math.round(picture.base64.length * 0.75),
+          });
+        })
+        .catch((error: unknown) => {
+          console.warn("[assist] camera capture failed", error);
+        })
+        .finally(() => {
+          captureInFlightRef.current = false;
+          captureTimerRef.current = setTimeout(captureNextFrame, DEFAULT_LIVE_CAPTURE_INTERVAL_MS);
+        });
+    };
+
+    console.info("[assist] session connected, scheduling first frame");
+    captureTimerRef.current = setTimeout(captureNextFrame, 1500);
+
+    return () => {
+      if (captureTimerRef.current) {
+        clearTimeout(captureTimerRef.current);
+        captureTimerRef.current = null;
+      }
+      captureInFlightRef.current = false;
+    };
+  }, [
+    cameraMountError,
+    cameraReady,
+    ingestLiveFrame,
+    isFocused,
+    isLiveActive,
+    permission?.granted,
+    sessionState,
+  ]);
+
+  const previewBlocked =
+    cameraMountError !== null || (permission?.granted === false && permission.canAskAgain === false);
+  const showCamera = permission?.granted === true;
+  const statusText = !hasApiKey
+    ? "Missing OpenAI API key"
+    : !permission
+      ? "Checking camera access..."
+      : cameraMountError
+        ? "Camera failed to start"
+      : previewBlocked
+        ? "Camera access blocked"
+        : !showCamera
+          ? "Waiting for camera permission..."
+          : !cameraReady
+            ? "Starting rear camera..."
+            : isLiveActive
+              ? sessionState === "connected"
+                ? "Live guidance active"
+                : "Connecting live guidance..."
+              : "Preview ready";
 
   return (
     <SafeAreaView style={styles.container}>
@@ -54,26 +248,46 @@ export default function AssistScreen() {
       )}
 
       <View style={styles.cameraContainer}>
-        {lastFrame ? (
-          <Image
-            source={{ uri: `data:image/jpeg;base64,${lastFrame.data}` }}
+        {showCamera ? (
+          <CameraView
+            ref={cameraRef}
             style={styles.cameraPreview}
-            resizeMode="cover"
+            active={isFocused}
+            facing="back"
+            animateShutter={false}
+            onCameraReady={() => {
+              console.info("[assist] camera preview ready");
+              setCameraReady(true);
+            }}
+            onMountError={(event) => {
+              const message = event.message || "unknown_camera_error";
+              console.error("[assist] camera mount error", message);
+              setCameraMountError(message);
+              setCameraReady(false);
+              stopLiveAssist();
+            }}
           />
         ) : (
           <View style={styles.placeholder}>
-            <Text style={styles.placeholderIcon}>{connected ? "..." : "!"}</Text>
-            <Text style={styles.placeholderText}>
-              {connected ? "Waiting for camera feed..." : "Not connected to Pi"}
+            <Text style={styles.placeholderIcon}>
+              {previewBlocked || !hasApiKey ? "!" : "..."}
             </Text>
+            <Text style={styles.placeholderText}>{statusText}</Text>
+            {cameraMountError ? (
+              <Text style={styles.placeholderSubtext}>{cameraMountError}</Text>
+            ) : previewBlocked && (
+              <Text style={styles.placeholderSubtext}>
+                Enable camera access in system settings to use live assist.
+              </Text>
+            )}
           </View>
         )}
 
-        {latency !== null && (
-          <View style={styles.latencyPill}>
-            <Text style={styles.latencyText}>{latency}ms</Text>
+        <View style={styles.overlayTop}>
+          <View style={styles.statusPill}>
+            <Text style={styles.statusPillText}>{statusText}</Text>
           </View>
-        )}
+        </View>
       </View>
 
       {(lastTranscript || partialTranscript) && (
@@ -86,12 +300,19 @@ export default function AssistScreen() {
 
       <View style={styles.statusStrip}>
         <View style={styles.statusItem}>
-          <View style={[styles.statusDot, connected ? styles.dotGreen : styles.dotRed]} />
-          <Text style={styles.statusLabel}>{connected ? "Connected" : "Offline"}</Text>
+          <View
+            style={[
+              styles.statusDot,
+              showCamera && cameraReady ? styles.dotGreen : styles.dotRed,
+            ]}
+          />
+          <Text style={styles.statusLabel}>
+            {showCamera && cameraReady ? "Camera Ready" : "Camera Blocked"}
+          </Text>
         </View>
         <View style={styles.statusItem}>
           <Text style={styles.statusLabel}>
-            {lastFrame ? `${lastFrame.width}x${lastFrame.height}` : "No Feed"}
+            {lastCaptureSize ? `${lastCaptureSize.width}x${lastCaptureSize.height}` : "No Frames"}
           </Text>
         </View>
         <View style={styles.statusItem}>
@@ -108,10 +329,17 @@ export default function AssistScreen() {
       </View>
 
       <View style={styles.controls}>
-        <Pressable style={styles.secondaryBtn} onPress={startPiAssist}>
+        <Pressable
+          style={[
+            styles.secondaryBtn,
+            (!showCamera || !cameraReady || !hasApiKey) && styles.disabledBtn,
+          ]}
+          disabled={!showCamera || !cameraReady || !hasApiKey}
+          onPress={startLiveAssist}
+        >
           <Text style={styles.secondaryBtnText}>Start</Text>
         </Pressable>
-        <Pressable style={styles.stopBtn} onPress={stopPiAssist}>
+        <Pressable style={styles.stopBtn} onPress={stopLiveAssist}>
           <Text style={styles.stopBtnText}>Stop</Text>
         </Pressable>
       </View>
@@ -168,29 +396,44 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
+    paddingHorizontal: 28,
   },
   placeholderIcon: {
     fontSize: 48,
     marginBottom: 12,
+    color: "#d4dee2",
   },
   placeholderText: {
     fontSize: 16,
-    color: "#666",
+    color: "#c9d7de",
+    textAlign: "center",
   },
-  latencyPill: {
+  placeholderSubtext: {
+    fontSize: 13,
+    color: "#7f97a3",
+    textAlign: "center",
+    marginTop: 10,
+    lineHeight: 18,
+  },
+  overlayTop: {
     position: "absolute",
     top: 12,
+    left: 12,
     right: 12,
-    backgroundColor: "#00000099",
+    flexDirection: "row",
+    justifyContent: "flex-start",
+  },
+  statusPill: {
+    backgroundColor: "#000000aa",
     borderRadius: 8,
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 6,
+    maxWidth: "100%",
   },
-  latencyText: {
-    color: "#4FC3F7",
+  statusPillText: {
+    color: "#d9f3ff",
     fontSize: 12,
     fontWeight: "700",
-    fontVariant: ["tabular-nums"],
   },
   transcriptContainer: {
     marginHorizontal: 12,
@@ -276,5 +519,8 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "700",
+  },
+  disabledBtn: {
+    opacity: 0.5,
   },
 });

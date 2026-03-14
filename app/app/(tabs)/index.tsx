@@ -33,11 +33,10 @@ function StatusCard({
 }
 
 export default function SetupScreen() {
-  const { piAddress, setPiAddress, connected, piStatus, connect, disconnect } = usePi();
-  const { hasApiKey, micState, sessionState, startPiAssist } = useAssist();
+  const { piAddress, setPiAddress, connected, piStatus, connect } = usePi();
+  const { hasApiKey, micState, sessionState } = useAssist();
 
   const handleStart = () => {
-    startPiAssist();
     router.push("/(tabs)/assist");
   };
 
@@ -45,7 +44,7 @@ export default function SetupScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={styles.title}>HackberryPi</Text>
-        <Text style={styles.subtitle}>App-Owned Realtime Navigation</Text>
+        <Text style={styles.subtitle}>Realtime Navigation</Text>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Pi Address</Text>
@@ -62,10 +61,10 @@ export default function SetupScreen() {
             />
             <Pressable
               style={[styles.connectBtn, connected && styles.connectBtnConnected]}
-              onPress={connected ? disconnect : connect}
+              onPress={connect}
             >
               <Text style={styles.connectBtnText}>
-                {connected ? "Disconnect" : "Connect"}
+                {connected ? "Connected" : "Connect"}
               </Text>
             </Pressable>
           </View>
@@ -101,12 +100,9 @@ export default function SetupScreen() {
         </View>
 
         <Pressable
-          style={[
-            styles.startBtn,
-            (!connected || !hasApiKey) && styles.startBtnDisabled,
-          ]}
+          style={[styles.startBtn, !hasApiKey && styles.startBtnDisabled]}
           onPress={handleStart}
-          disabled={!connected || !hasApiKey}
+          disabled={!hasApiKey}
         >
           <Text style={styles.startBtnText}>Start Live Assist</Text>
         </Pressable>
