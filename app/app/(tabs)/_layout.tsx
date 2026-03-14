@@ -56,6 +56,15 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="pi"
+        options={{
+          title: "Pi",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="pulse-outline" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

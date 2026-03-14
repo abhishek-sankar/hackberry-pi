@@ -1,11 +1,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { AppCommand, DebugEvent, PiEvent, PiFrame, PiStatus } from "../lib/types";
+import { IMUClient, IMUFrame } from "../lib/IMUClient";
+import { AppCommand, DebugEvent, PiFrame, PiStatus } from "../lib/types";
 
 interface PiContextValue {
   connected: boolean;
+  connecting: boolean;
   piAddress: string;
   setPiAddress: (addr: string) => void;
+  /** Camera frame from Pi — always null in IMU-only mode */
   lastFrame: PiFrame | null;
+  /** Latest IMU sensor frame from the Pi */
+  imuFrame: IMUFrame | null;
   piStatus: PiStatus | null;
   debugEvents: DebugEvent[];
   latency: number | null;
@@ -16,109 +21,82 @@ interface PiContextValue {
 
 const PiContext = createContext<PiContextValue | null>(null);
 
-let debugIdCounter = 0;
-
 export function PiProvider({ children }: { children: React.ReactNode }) {
-  const ws = useRef<WebSocket | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const shouldReconnect = useRef(false);
+  const clientRef = useRef<IMUClient>(new IMUClient());
   const [piAddress, setPiAddress] = useState("192.168.1.100");
   const [connected, setConnected] = useState(false);
-  const [lastFrame, setLastFrame] = useState<PiFrame | null>(null);
-  const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
-  const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
+  const [connecting, setConnecting] = useState(false);
+  const [imuFrame, setImuFrame] = useState<IMUFrame | null>(null);
   const [latency, setLatency] = useState<number | null>(null);
 
   const disconnect = useCallback(() => {
-    shouldReconnect.current = false;
-    if (reconnectTimer.current) {
-      clearTimeout(reconnectTimer.current);
-      reconnectTimer.current = null;
-    }
-    if (ws.current) {
-      ws.current.close();
-      ws.current = null;
-    }
+    const client = clientRef.current;
+    try {
+      client.stop();
+    } catch {}
+    try {
+      client.disconnect();
+    } catch {}
+    client.clearCallbacks();
+    clientRef.current = new IMUClient();
     setConnected(false);
+    setConnecting(false);
+    setImuFrame(null);
+    setLatency(null);
   }, []);
 
-  const connectWs = useCallback(() => {
-    shouldReconnect.current = true;
+  const connect = useCallback(async () => {
+    // Tear down any existing connection first
+    const old = clientRef.current;
+    try { old.stop(); } catch {}
+    try { old.disconnect(); } catch {}
+    old.clearCallbacks();
 
-    if (reconnectTimer.current) {
-      clearTimeout(reconnectTimer.current);
-      reconnectTimer.current = null;
+    const client = new IMUClient();
+    clientRef.current = client;
+
+    setConnecting(true);
+    setConnected(false);
+
+    const ok = await client.connect(piAddress, 8765);
+
+    if (!ok) {
+      setConnecting(false);
+      clientRef.current = new IMUClient();
+      return;
     }
-    if (ws.current) {
-      ws.current.close();
-      ws.current = null;
-    }
 
-    const socket = new WebSocket(`ws://${piAddress}:8765`);
-    ws.current = socket;
-
-    socket.onopen = () => {
-      setConnected(true);
-    };
-
-    socket.onmessage = (event) => {
-      const now = Date.now();
-      try {
-        const data: PiEvent = JSON.parse(event.data);
-
-        if ("timestamp" in data && data.timestamp) {
-          setLatency(Math.round(now - data.timestamp * 1000));
-        }
-
-        switch (data.type) {
-          case "frame":
-            setLastFrame(data);
-            break;
-          case "status":
-            setPiStatus({
-              camera: data.camera,
-              streaming: data.streaming,
-              state: data.state,
-              fps: data.fps,
-            });
-            break;
-          case "debug":
-            setDebugEvents((prev) => [
-              ...prev.slice(-199),
-              {
-                id: ++debugIdCounter,
-                event: data.event,
-                payload: data.payload,
-                timestamp: data.timestamp,
-                source: "pi",
-              },
-            ]);
-            break;
-        }
-      } catch (error) {
-        console.warn("Failed to parse Pi message:", error);
+    // Register frame callback before starting stream
+    client.onFrame((frame) => {
+      setImuFrame(frame);
+      if (frame.ts) {
+        setLatency(Math.round(Date.now() - frame.ts));
       }
-    };
+    });
 
-    socket.onclose = () => {
-      ws.current = null;
-      setConnected(false);
-      if (shouldReconnect.current) {
-        reconnectTimer.current = setTimeout(connectWs, 3000);
-      }
-    };
-
-    socket.onerror = () => {
-      socket.close();
-    };
+    client.start();
+    setConnecting(false);
+    setConnected(true);
   }, [piAddress]);
 
+  /**
+   * Maps AppCommand actions to IMUClient streaming controls so that
+   * AssistContext can call sendCommand without any changes.
+   * - start_stream  → client.start()
+   * - stop_stream   → client.stop()
+   * - everything else → no-op
+   */
   const sendCommand = useCallback((cmd: AppCommand) => {
-    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify(cmd));
+    const client = clientRef.current;
+    if (!client.connected) return;
+    if (cmd.action === "start_stream") {
+      try { client.start(); } catch {}
+    } else if (cmd.action === "stop_stream") {
+      try { client.stop(); } catch {}
     }
   }, []);
 
+  // Clean up on unmount
   useEffect(() => {
     return () => {
       disconnect();
@@ -129,14 +107,16 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
     <PiContext.Provider
       value={{
         connected,
+        connecting,
         piAddress,
         setPiAddress,
-        lastFrame,
-        piStatus,
-        debugEvents,
+        lastFrame: null,   // IMU mode — no camera frames
+        imuFrame,
+        piStatus: null,    // IMU mode — no separate status messages
+        debugEvents: [],
         latency,
         sendCommand,
-        connect: connectWs,
+        connect,
         disconnect,
       }}
     >
