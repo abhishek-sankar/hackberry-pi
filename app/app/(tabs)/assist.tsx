@@ -1,11 +1,14 @@
 import { useEffect, useRef } from "react";
 import { Image, Pressable, SafeAreaView, StyleSheet, Switch, Text, View } from "react-native";
+import { CameraView } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import { useAssist } from "../../contexts/AssistContext";
 import { usePi } from "../../contexts/PiContext";
+import { useFrameSource } from "../../contexts/FrameSourceContext";
 
 export default function AssistScreen() {
   const { lastFrame, connected, latency, walkingState } = usePi();
+  const { frameSourceMode, cameraRef, cameraPermission, requestCameraPermission } = useFrameSource();
   const {
     lastHazard,
     lastTranscript,
@@ -56,7 +59,24 @@ export default function AssistScreen() {
       )}
 
       <View style={styles.cameraContainer}>
-        {lastFrame ? (
+        {frameSourceMode === "phone" ? (
+          cameraPermission ? (
+            <CameraView
+              ref={cameraRef}
+              style={styles.cameraPreview}
+              facing="back"
+              mute
+            />
+          ) : (
+            <View style={styles.placeholder}>
+              <Text style={styles.placeholderIcon}>📷</Text>
+              <Text style={styles.placeholderText}>Camera permission required</Text>
+              <Pressable style={styles.permissionBtn} onPress={requestCameraPermission}>
+                <Text style={styles.permissionBtnText}>Grant Access</Text>
+              </Pressable>
+            </View>
+          )
+        ) : lastFrame ? (
           <Image
             source={{ uri: `data:image/jpeg;base64,${lastFrame.data}` }}
             style={styles.cameraPreview}
@@ -66,16 +86,23 @@ export default function AssistScreen() {
           <View style={styles.placeholder}>
             <Text style={styles.placeholderIcon}>{connected ? "..." : "!"}</Text>
             <Text style={styles.placeholderText}>
-              {connected ? "Waiting for camera feed..." : "Not connected to Pi"}
+              {connected ? "Waiting for Pi camera feed..." : "Not connected to Pi"}
             </Text>
           </View>
         )}
 
-        {latency !== null && (
-          <View style={styles.latencyPill}>
-            <Text style={styles.latencyText}>{latency}ms</Text>
+        <View style={styles.overlayRow}>
+          <View style={styles.sourceBadge}>
+            <Text style={styles.sourceBadgeText}>
+              {frameSourceMode === "phone" ? "📱 Phone" : "🖥 Pi"}
+            </Text>
           </View>
-        )}
+          {latency !== null && (
+            <View style={styles.latencyPill}>
+              <Text style={styles.latencyText}>{latency}ms</Text>
+            </View>
+          )}
+        </View>
       </View>
 
       {(lastTranscript || partialTranscript) && (
@@ -199,10 +226,39 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#666",
   },
-  latencyPill: {
+  permissionBtn: {
+    marginTop: 12,
+    backgroundColor: "#4FC3F7",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  permissionBtnText: {
+    color: "#07222b",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  overlayRow: {
     position: "absolute",
     top: 12,
+    left: 12,
     right: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  sourceBadge: {
+    backgroundColor: "#00000099",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  sourceBadgeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  latencyPill: {
     backgroundColor: "#00000099",
     borderRadius: 8,
     paddingHorizontal: 10,

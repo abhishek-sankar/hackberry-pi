@@ -26,6 +26,7 @@ import type {
   SpeechState,
 } from "../lib/types";
 import { usePi } from "./PiContext";
+import { useFrameSource, CapturedFrame } from "./FrameSourceContext";
 
 interface AssistContextValue {
   hasApiKey: boolean;
@@ -114,8 +115,10 @@ function parseHazard(text: string, capturedAt: number): HazardState | null {
 }
 
 export function AssistProvider({ children }: { children: React.ReactNode }) {
-  const { lastFrame, sendCommand, walkingState } = usePi();
+  const { sendCommand, walkingState } = usePi();
+  const { lastFrame, captureFrame } = useFrameSource();
   const [sourceMode, setSourceMode] = useState<SourceMode>("pi_live");
+  const sourceModeRef = useRef<SourceMode>("pi_live");
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [speechState, setSpeechState] = useState<SpeechState>("idle");
   const [micState, setMicState] = useState<MicState>("idle");
@@ -129,6 +132,8 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
   const stationaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoStoppedRef = useRef(false);
   const startPiAssistRef = useRef<() => void>(() => {});
+  const captureFrameRef = useRef(captureFrame);
+  useEffect(() => { captureFrameRef.current = captureFrame; }, [captureFrame]);
   const clientRef = useRef<RealtimeSessionClient | null>(null);
   const shouldListenRef = useRef(false);
   const restartRecognitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -162,7 +167,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const stopRealtime = useCallback(() => {
-    if (sourceMode === "pi_live") {
+    if (sourceModeRef.current === "pi_live") {
       sendCommand({ type: "command", action: "stop_stream" });
     }
     shouldListenRef.current = false;
@@ -177,38 +182,54 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
     }
     Speech.stop();
     clientRef.current?.disconnect();
+    clientRef.current = null;
     setSessionState("idle");
     setSpeechState("idle");
     setMicState((prev) => (prev === "denied" ? prev : "idle"));
-  }, [sendCommand, sourceMode]);
+  }, [sendCommand]); // sourceMode accessed via ref — stable identity
 
   const startListening = useCallback(async () => {
+    console.log("[AssistContext] startListening: start");
     shouldListenRef.current = true;
     setMicState("requesting");
-    const useOnDeviceRecognition =
-      ExpoSpeechRecognitionModule.supportsOnDeviceRecognition();
-    const permission = useOnDeviceRecognition
-      ? await ExpoSpeechRecognitionModule.requestMicrophonePermissionsAsync()
-      : await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-    if (!permission.granted) {
-      setMicState("denied");
-      appendDebug("mic_permission_denied");
-      return;
+    let useOnDeviceRecognition = false;
+    try {
+      useOnDeviceRecognition = ExpoSpeechRecognitionModule.supportsOnDeviceRecognition();
+      console.log("[AssistContext] startListening: supportsOnDevice =", useOnDeviceRecognition);
+    } catch (e) {
+      console.error("[AssistContext] startListening: supportsOnDeviceRecognition threw:", e);
     }
 
+    console.log("[AssistContext] startListening: calling .start() — iOS will prompt for permissions natively");
     setMicState("ready");
-    ExpoSpeechRecognitionModule.start({
-      ...speechRecognitionOptions,
-      requiresOnDeviceRecognition: useOnDeviceRecognition,
-    });
+    try {
+      ExpoSpeechRecognitionModule.start({
+        ...speechRecognitionOptions,
+        requiresOnDeviceRecognition: false,
+      });
+      console.log("[AssistContext] startListening: .start() returned");
+    } catch (e) {
+      console.error("[AssistContext] startListening: .start() threw:", e);
+      setMicState("error");
+    }
   }, [appendDebug]);
 
   const ensureClient = useCallback(() => {
+    console.log("[AssistContext] ensureClient called, existing:", !!clientRef.current);
     if (!clientRef.current) {
+      console.log("[AssistContext] creating new RealtimeSessionClient");
       clientRef.current = new RealtimeSessionClient({
-        onSessionState: setSessionState,
+        onSessionState: (state) => {
+          console.log("[AssistContext] sessionState →", state);
+          setSessionState(state);
+          if (state === "connected") {
+            console.log("[AssistContext] connected — triggering first captureFrame");
+            void captureFrameRef.current();
+          }
+        },
         onPartialText: setPartialTranscript,
         onResponse: (text, meta) => {
+          console.log("[AssistContext] onResponse, latency:", meta.latencyMs, "text:", text.slice(0, 60));
           setLastTranscript(text);
           setPartialTranscript("");
           if (meta.capturedAt) {
@@ -222,8 +243,11 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
             text,
           });
           speakGuidance(text, Boolean(hazard?.isUrgent));
+          console.log("[AssistContext] triggering next captureFrame");
+          void captureFrameRef.current();
         },
         onError: (message) => {
+          console.error("[AssistContext] realtime error:", message);
           appendDebug("realtime_error", { message });
           setSessionState("error");
         },
@@ -236,32 +260,54 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
 
   const startSession = useCallback(
     async (mode: SourceMode) => {
-      if (mode !== "pi_live") {
-        sendCommand({ type: "command", action: "stop_stream" });
-      }
-      const client = ensureClient();
-      setSourceMode(mode);
-      client.setSourceMode(mode);
-      client.connect(mode);
-      if (mode === "pi_live") {
-        await startListening();
-      } else {
-        shouldListenRef.current = false;
-        setMicState("idle");
+      console.log("[AssistContext] startSession called, mode:", mode);
+      try {
+        if (mode !== "pi_live") {
+          sendCommand({ type: "command", action: "stop_stream" });
+        }
+        const client = ensureClient();
+        console.log("[AssistContext] ensureClient done:", !!client);
+        sourceModeRef.current = mode;
+        setSourceMode(mode);
+        client.setSourceMode(mode);
+        console.log("[AssistContext] calling client.connect");
+        client.connect(mode);
+        console.log("[AssistContext] client.connect returned");
+        if (mode === "pi_live") {
+          console.log("[AssistContext] skipping mic — isolating frame→OpenAI loop first");
+          shouldListenRef.current = false;
+          setMicState("idle");
+          // TODO: re-enable once frame pipeline confirmed working
+          // await startListening();
+        } else {
+          shouldListenRef.current = false;
+          setMicState("idle");
+        }
+      } catch (e) {
+        console.error("[AssistContext] startSession threw:", e);
+        appendDebug("start_session_error", { message: String(e) });
+        setSessionState("error");
       }
     },
-    [ensureClient, sendCommand, startListening]
+    [appendDebug, ensureClient, sendCommand, startListening]
   );
 
   const startPiAssist = useCallback(() => {
+    console.log("[AssistContext] startPiAssist called");
     sendCommand({ type: "command", action: "set_stream_config", fps: DEFAULT_PI_STREAM_FPS });
     sendCommand({ type: "command", action: "start_stream" });
-    void startSession("pi_live");
-  }, [sendCommand, startSession]);
+    startSession("pi_live").catch((e) => {
+      console.error("[AssistContext] startPiAssist unhandled rejection:", e);
+      appendDebug("start_pi_assist_error", { message: String(e) });
+      setSessionState("error");
+    });
+  }, [appendDebug, sendCommand, startSession]);
 
   const stopPiAssist = useCallback(() => {
+    console.log("[AssistContext] stopPiAssist called");
     sendCommand({ type: "command", action: "stop_stream" });
     stopRealtime();
+    sourceModeRef.current = "pi_live";
     setSourceMode("pi_live");
   }, [sendCommand, stopRealtime]);
 
@@ -271,6 +317,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
 
   const stopReplayAssist = useCallback(() => {
     stopRealtime();
+    sourceModeRef.current = "video_replay";
     setSourceMode("video_replay");
   }, [stopRealtime]);
 
@@ -448,7 +495,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (state !== "active") {
+      if (state === "background") {
         stopRealtime();
       }
     });

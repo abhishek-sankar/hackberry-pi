@@ -10,6 +10,7 @@ import {
 import { router } from "expo-router";
 import { useAssist } from "../../contexts/AssistContext";
 import { usePi } from "../../contexts/PiContext";
+import { useFrameSource } from "../../contexts/FrameSourceContext";
 
 function StatusCard({
   label,
@@ -35,6 +36,7 @@ function StatusCard({
 export default function SetupScreen() {
   const { piAddress, setPiAddress, connected, piStatus, connect, disconnect } = usePi();
   const { hasApiKey, micState, sessionState, startPiAssist } = useAssist();
+  const { frameSourceMode, setFrameSourceMode, cameraPermission, requestCameraPermission } = useFrameSource();
 
   const handleStart = () => {
     startPiAssist();
@@ -54,7 +56,7 @@ export default function SetupScreen() {
               style={styles.input}
               value={piAddress}
               onChangeText={setPiAddress}
-              placeholder="10.0.0.174"
+              placeholder="192.168.1.100"
               placeholderTextColor="#555"
               keyboardType="numbers-and-punctuation"
               autoCapitalize="none"
@@ -69,6 +71,33 @@ export default function SetupScreen() {
               </Text>
             </Pressable>
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Frame Source</Text>
+          <View style={styles.segmentedControl}>
+            <Pressable
+              style={[styles.segment, frameSourceMode === "phone" && styles.segmentActive]}
+              onPress={() => setFrameSourceMode("phone")}
+            >
+              <Text style={[styles.segmentText, frameSourceMode === "phone" && styles.segmentTextActive]}>
+                📱 Phone Camera
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.segment, frameSourceMode === "pi" && styles.segmentActive]}
+              onPress={() => setFrameSourceMode("pi")}
+            >
+              <Text style={[styles.segmentText, frameSourceMode === "pi" && styles.segmentTextActive]}>
+                🖥 Pi Camera
+              </Text>
+            </Pressable>
+          </View>
+          {frameSourceMode === "phone" && !cameraPermission && (
+            <Pressable style={styles.permissionBtn} onPress={requestCameraPermission}>
+              <Text style={styles.permissionBtnText}>Grant Camera Permission</Text>
+            </Pressable>
+          )}
         </View>
 
         <View style={styles.section}>
@@ -257,5 +286,41 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     textAlign: "center",
+  },
+  segmentedControl: {
+    flexDirection: "row",
+    backgroundColor: "#1a1a1a",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#333",
+    overflow: "hidden",
+  },
+  segment: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  segmentActive: {
+    backgroundColor: "#14404d",
+  },
+  segmentText: {
+    color: "#555",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  segmentTextActive: {
+    color: "#4FC3F7",
+  },
+  permissionBtn: {
+    marginTop: 10,
+    backgroundColor: "#14404d",
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  permissionBtnText: {
+    color: "#4FC3F7",
+    fontSize: 14,
+    fontWeight: "700",
   },
 });

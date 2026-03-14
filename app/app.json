@@ -15,8 +15,9 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone for hands-free navigation help.",
-        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to recognize your speech for hands-free follow-up questions.",
+        "NSMicrophoneUsageDescription": "Used for voice commands during navigation assistance",
+        "NSCameraUsageDescription": "Used for visual navigation assistance",
+        "NSSpeechRecognitionUsageDescription": "Used for voice commands during navigation assistance",
         "NSPhotoLibraryUsageDescription": "HackberryPi needs photo library access so you can test navigation guidance with saved videos."
       },
       "bundleIdentifier": "com.anonymous.app"
