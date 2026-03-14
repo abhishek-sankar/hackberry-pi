@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   SafeAreaView,
   ScrollView,
@@ -8,8 +8,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { IMUClient, IMUFrame } from '../../lib/IMUClient';
 import { useWalkingDetector, WalkingState } from '../../lib/useWalkingDetector';
+import { usePi } from '../../contexts/PiContext';
 
 type Status = 'disconnected' | 'connecting' | 'connected' | 'streaming' | 'error';
 
@@ -22,53 +22,80 @@ const STATUS_COLOR: Record<Status, string> = {
 };
 
 export default function IMUScreen() {
-  const client = useRef(new IMUClient());
+  const { piAddress, setPiAddress, connected, connecting, imuFrame, connect, disconnect, sendCommand } = usePi();
   const { detect, reset } = useWalkingDetector();
-  const [ip, setIp] = useState('10.0.0.174');
-  const [status, setStatus] = useState<Status>('disconnected');
-  const [frame, setFrame] = useState<IMUFrame | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
   const [walkingState, setWalkingState] = useState<WalkingState>('unknown');
+  const [connectError, setConnectError] = useState(false);
+  const wasConnecting = useRef(false);
 
-  async function handleConnect() {
-    setStatus('connecting');
-    const ok = await client.current.connect(ip, 8765);
-    setStatus(ok ? 'connected' : 'error');
-    if (!ok) client.current = new IMUClient();
-  }
+  // Detect failed connect attempts
+  useEffect(() => {
+    if (connecting) {
+      wasConnecting.current = true;
+      setConnectError(false);
+    } else if (wasConnecting.current && !connected) {
+      setConnectError(true);
+      wasConnecting.current = false;
+    } else if (connected) {
+      setConnectError(false);
+      wasConnecting.current = false;
+    }
+  }, [connecting, connected]);
+
+  // Reset streaming state if externally disconnected (e.g. from Setup tab)
+  useEffect(() => {
+    if (!connected) {
+      setIsStreaming(false);
+      setSampleCount(0);
+      reset();
+      setWalkingState('unknown');
+    }
+  }, [connected, reset]);
+
+  // Count samples and detect walking from shared imuFrame
+  useEffect(() => {
+    if (!isStreaming || !imuFrame) return;
+    setSampleCount(n => n + 1);
+    setWalkingState(detect(imuFrame));
+  }, [imuFrame, isStreaming, detect]);
 
   function handleStart() {
-    client.current.onFrame((f) => {
-      setFrame(f);
-      setSampleCount(n => n + 1);
-      setWalkingState(detect(f));
-    });
-    client.current.start();
-    setStatus('streaming');
+    sendCommand({ type: 'command', action: 'start_stream' });
+    setIsStreaming(true);
   }
 
   function handleStop() {
-    client.current.stop();
-    client.current.clearCallbacks();
+    sendCommand({ type: 'command', action: 'stop_stream' });
+    setIsStreaming(false);
     reset();
     setWalkingState('unknown');
-    setStatus('connected');
   }
 
   function handleDisconnect() {
-    client.current.disconnect();
-    client.current.clearCallbacks();
-    client.current = new IMUClient();
-    reset();
-    setFrame(null);
+    if (isStreaming) {
+      sendCommand({ type: 'command', action: 'stop_stream' });
+    }
+    disconnect();
     setSampleCount(0);
+    setIsStreaming(false);
+    reset();
     setWalkingState('unknown');
-    setStatus('disconnected');
   }
+
+  const status: Status = connecting
+    ? 'connecting'
+    : connectError
+    ? 'error'
+    : connected && isStreaming
+    ? 'streaming'
+    : connected
+    ? 'connected'
+    : 'disconnected';
 
   const isDisconnected = status === 'disconnected' || status === 'error';
   const isConnected    = status === 'connected';
-  const isStreaming    = status === 'streaming';
 
   return (
     <SafeAreaView style={s.root}>
@@ -81,8 +108,8 @@ export default function IMUScreen() {
       <View style={s.row}>
         <TextInput
           style={s.input}
-          value={ip}
-          onChangeText={setIp}
+          value={piAddress}
+          onChangeText={setPiAddress}
           placeholder="IP address"
           placeholderTextColor="#555"
           autoCapitalize="none"
@@ -93,7 +120,7 @@ export default function IMUScreen() {
       </View>
 
       <View style={s.controls}>
-        <Btn label="Connect"    onPress={handleConnect}    disabled={!isDisconnected} />
+        <Btn label="Connect"    onPress={connect}          disabled={!isDisconnected} />
         <Btn label="Start"      onPress={handleStart}      disabled={!isConnected}    />
         <Btn label="Stop"       onPress={handleStop}       disabled={!isStreaming}     />
         <Btn label="Disconnect" onPress={handleDisconnect} disabled={isDisconnected}   />
@@ -108,27 +135,27 @@ export default function IMUScreen() {
       )}
 
       <ScrollView style={s.frameBox} contentContainerStyle={s.frameContent}>
-        {frame ? (
+        {imuFrame ? (
           <>
             <Section title="Accelerometer (m/s²)" rows={[
-              ['X', (frame.ax * 9.81 / 16384).toFixed(4)],
-              ['Y', (frame.ay * 9.81 / 16384).toFixed(4)],
-              ['Z', (frame.az * 9.81 / 16384).toFixed(4)],
+              ['X', (imuFrame.ax * 9.81 / 16384).toFixed(4)],
+              ['Y', (imuFrame.ay * 9.81 / 16384).toFixed(4)],
+              ['Z', (imuFrame.az * 9.81 / 16384).toFixed(4)],
             ]} />
             <Section title="Gyroscope (rad/s)" rows={[
-              ['X', (frame.gx / 16.0 * Math.PI / 180).toFixed(4)],
-              ['Y', (frame.gy / 16.0 * Math.PI / 180).toFixed(4)],
-              ['Z', (frame.gz / 16.0 * Math.PI / 180).toFixed(4)],
+              ['X', (imuFrame.gx / 16.0 * Math.PI / 180).toFixed(4)],
+              ['Y', (imuFrame.gy / 16.0 * Math.PI / 180).toFixed(4)],
+              ['Z', (imuFrame.gz / 16.0 * Math.PI / 180).toFixed(4)],
             ]} />
             <Section title="Rotation (°)" rows={[
-              ['Roll',  frame.r.toFixed(2)],
-              ['Pitch', frame.p.toFixed(2)],
-              ['Yaw',   frame.y.toFixed(2)],
+              ['Roll',  imuFrame.r.toFixed(2)],
+              ['Pitch', imuFrame.p.toFixed(2)],
+              ['Yaw',   imuFrame.y.toFixed(2)],
             ]} />
             <Section title="Magnetometer (raw)" rows={[
-              ['X', frame.mx.toFixed(0)],
-              ['Y', frame.my.toFixed(0)],
-              ['Z', frame.mz.toFixed(0)],
+              ['X', imuFrame.mx.toFixed(0)],
+              ['Y', imuFrame.my.toFixed(0)],
+              ['Z', imuFrame.mz.toFixed(0)],
             ]} />
           </>
         ) : (

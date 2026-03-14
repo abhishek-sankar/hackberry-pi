@@ -23,7 +23,7 @@ const PiContext = createContext<PiContextValue | null>(null);
 
 export function PiProvider({ children }: { children: React.ReactNode }) {
   const clientRef = useRef<IMUClient>(new IMUClient());
-  const [piAddress, setPiAddress] = useState("192.168.1.100");
+  const [piAddress, setPiAddress] = useState("10.0.0.174");
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [imuFrame, setImuFrame] = useState<IMUFrame | null>(null);
@@ -66,7 +66,8 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Register frame callback before starting stream
+    // Register frame callback once after a successful connection.
+    // Streaming only begins when sendCommand("start_stream") is called.
     client.onFrame((frame) => {
       setImuFrame(frame);
       if (frame.ts) {
@@ -74,7 +75,6 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    client.start();
     setConnecting(false);
     setConnected(true);
   }, [piAddress]);
@@ -94,6 +94,7 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
     } else if (cmd.action === "stop_stream") {
       try { client.stop(); } catch {}
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Clean up on unmount
