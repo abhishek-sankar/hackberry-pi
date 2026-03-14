@@ -8,8 +8,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useWalkingDetector, WalkingState } from '../../lib/useWalkingDetector';
 import { usePi } from '../../contexts/PiContext';
+import { WalkingState } from '@/lib/useWalkingDetector';
 
 type Status = 'disconnected' | 'connecting' | 'connected' | 'streaming' | 'error';
 
@@ -22,11 +22,9 @@ const STATUS_COLOR: Record<Status, string> = {
 };
 
 export default function IMUScreen() {
-  const { piAddress, setPiAddress, connected, connecting, imuFrame, connect, disconnect, sendCommand } = usePi();
-  const { detect, reset } = useWalkingDetector();
+  const { piAddress, setPiAddress, connected, connecting, imuFrame, walkingState, connect, disconnect, sendCommand } = usePi();
   const [isStreaming, setIsStreaming] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
-  const [walkingState, setWalkingState] = useState<WalkingState>('unknown');
   const [connectError, setConnectError] = useState(false);
   const wasConnecting = useRef(false);
 
@@ -49,17 +47,14 @@ export default function IMUScreen() {
     if (!connected) {
       setIsStreaming(false);
       setSampleCount(0);
-      reset();
-      setWalkingState('unknown');
     }
-  }, [connected, reset]);
+  }, [connected]);
 
-  // Count samples and detect walking from shared imuFrame
+  // Count samples — walking state comes from PiContext
   useEffect(() => {
     if (!isStreaming || !imuFrame) return;
     setSampleCount(n => n + 1);
-    setWalkingState(detect(imuFrame));
-  }, [imuFrame, isStreaming, detect]);
+  }, [imuFrame, isStreaming]);
 
   function handleStart() {
     sendCommand({ type: 'command', action: 'start_stream' });
@@ -69,8 +64,6 @@ export default function IMUScreen() {
   function handleStop() {
     sendCommand({ type: 'command', action: 'stop_stream' });
     setIsStreaming(false);
-    reset();
-    setWalkingState('unknown');
   }
 
   function handleDisconnect() {
@@ -80,8 +73,6 @@ export default function IMUScreen() {
     disconnect();
     setSampleCount(0);
     setIsStreaming(false);
-    reset();
-    setWalkingState('unknown');
   }
 
   const status: Status = connecting
@@ -168,12 +159,22 @@ export default function IMUScreen() {
   );
 }
 
+type BannerConfig = {
+  emoji: string;
+  label: string;
+  bg: string;
+  border: string;
+  text: string;
+};
+
+const walkingBannerConfig: Record<WalkingState, BannerConfig> = {
+  walking: { emoji: '🚶', label: 'Walking', bg: '#1a3a1a', border: '#4caf50', text: '#4caf50' },
+  still:   { emoji: '🧍', label: 'Still', bg: '#1a1a3a', border: '#2196f3', text: '#2196f3' },
+  unknown: { emoji: '⏳', label: 'Warming up…', bg: '#2a2a2a', border: '#888', text: '#888' },
+};
+
 function WalkingBanner({ state }: { state: WalkingState }) {
-  const config = {
-    walking: { emoji: '🚶', label: 'Walking',  bg: '#1a3a1a', border: '#4caf50', text: '#4caf50' },
-    still:   { emoji: '🧍', label: 'Still',    bg: '#1a1a3a', border: '#2196f3', text: '#2196f3' },
-    unknown: { emoji: '⏳', label: 'Warming up…', bg: '#2a2a2a', border: '#888', text: '#888' },
-  }[state];
+  const config = walkingBannerConfig[state];
 
   return (
     <View style={[s.banner, { backgroundColor: config.bg, borderColor: config.border }]}>

@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
-import { Image, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, SafeAreaView, StyleSheet, Switch, Text, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { useAssist } from "../../contexts/AssistContext";
 import { usePi } from "../../contexts/PiContext";
 
 export default function AssistScreen() {
-  const { lastFrame, connected, latency } = usePi();
+  const { lastFrame, connected, latency, walkingState } = usePi();
   const {
     lastHazard,
     lastTranscript,
@@ -17,6 +17,8 @@ export default function AssistScreen() {
     startPiAssist,
     stopPiAssist,
     clearHazard,
+    walkingAssistMode,
+    setWalkingAssistMode,
   } = useAssist();
   const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -105,6 +107,26 @@ export default function AssistScreen() {
         <Text style={styles.metaLabel}>
           Frame age: {lastFrameAgeMs !== null ? `${lastFrameAgeMs}ms` : "--"}
         </Text>
+      </View>
+
+      <View style={styles.walkingToggleRow}>
+        <Text style={styles.walkingToggleLabel}>Walking Assist</Text>
+        {walkingAssistMode && (
+          <Text style={[
+            styles.walkingStatePill,
+            walkingState === 'walking' ? styles.pillWalking
+            : walkingState === 'still' ? styles.pillStill
+            : styles.pillUnknown,
+          ]}>
+            {walkingState === 'walking' ? '🚶 Walking' : walkingState === 'still' ? '🧍 Still' : '⏳ Warming up'}
+          </Text>
+        )}
+        <Switch
+          value={walkingAssistMode}
+          onValueChange={setWalkingAssistMode}
+          trackColor={{ false: '#333', true: '#1a4a2e' }}
+          thumbColor={walkingAssistMode ? '#4CAF50' : '#888'}
+        />
       </View>
 
       <View style={styles.controls}>
@@ -247,6 +269,38 @@ const styles = StyleSheet.create({
     color: "#6d8d98",
     fontSize: 12,
     fontWeight: "600",
+  },
+  walkingToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 12,
+    marginBottom: 8,
+    gap: 10,
+  },
+  walkingToggleLabel: {
+    color: "#888",
+    fontSize: 13,
+    fontWeight: "600",
+    flex: 1,
+  },
+  walkingStatePill: {
+    fontSize: 12,
+    fontWeight: "700",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  pillWalking: {
+    backgroundColor: "#1a3a1a",
+    color: "#4caf50",
+  },
+  pillStill: {
+    backgroundColor: "#1a1a3a",
+    color: "#2196f3",
+  },
+  pillUnknown: {
+    backgroundColor: "#2a2a2a",
+    color: "#888",
   },
   controls: {
     flexDirection: "row",

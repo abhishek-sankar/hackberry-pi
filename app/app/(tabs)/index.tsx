@@ -54,7 +54,7 @@ export default function SetupScreen() {
               style={styles.input}
               value={piAddress}
               onChangeText={setPiAddress}
-              placeholder="192.168.1.100"
+              placeholder="10.0.0.174"
               placeholderTextColor="#555"
               keyboardType="numbers-and-punctuation"
               autoCapitalize="none"

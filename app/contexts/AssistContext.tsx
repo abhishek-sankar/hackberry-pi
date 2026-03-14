@@ -44,6 +44,8 @@ interface AssistContextValue {
   startReplayAssist: () => void;
   stopReplayAssist: () => void;
   clearHazard: () => void;
+  walkingAssistMode: boolean;
+  setWalkingAssistMode: (on: boolean) => void;
   pickVideo: () => Promise<void>;
   ingestReplayFrame: (frame: {
     data: string;
@@ -112,7 +114,7 @@ function parseHazard(text: string, capturedAt: number): HazardState | null {
 }
 
 export function AssistProvider({ children }: { children: React.ReactNode }) {
-  const { lastFrame, sendCommand } = usePi();
+  const { lastFrame, sendCommand, walkingState } = usePi();
   const [sourceMode, setSourceMode] = useState<SourceMode>("pi_live");
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [speechState, setSpeechState] = useState<SpeechState>("idle");
@@ -123,6 +125,10 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
   const [lastHazard, setLastHazard] = useState<HazardState | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<PickedVideoAsset | null>(null);
   const [appDebugEvents, setAppDebugEvents] = useState<DebugEvent[]>([]);
+  const [walkingAssistMode, setWalkingAssistMode] = useState(false);
+  const stationaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoStoppedRef = useRef(false);
+  const startPiAssistRef = useRef<() => void>(() => {});
   const clientRef = useRef<RealtimeSessionClient | null>(null);
   const shouldListenRef = useRef(false);
   const restartRecognitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -378,6 +384,11 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Walking assist gate — skip frames when not walking
+    if (walkingAssistMode && walkingState !== 'walking') {
+      return;
+    }
+
     if (lastFrame.frameId === consumedFrameId.current) {
       return;
     }
@@ -391,7 +402,49 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
     }
 
     ensureClient().sendVisualFrame(lastFrame);
-  }, [appendDebug, ensureClient, lastFrame, sessionState, sourceMode]);
+  }, [appendDebug, ensureClient, lastFrame, sessionState, sourceMode, walkingAssistMode, walkingState]);
+
+  // Keep a stable ref to startPiAssist for use inside the timer callback
+  useEffect(() => { startPiAssistRef.current = startPiAssist; }, [startPiAssist]);
+
+  // Walking assist: 5-min stationary timer + auto-resume
+  useEffect(() => {
+    if (!walkingAssistMode) {
+      if (stationaryTimerRef.current) {
+        clearTimeout(stationaryTimerRef.current);
+        stationaryTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (walkingState === 'walking') {
+      if (stationaryTimerRef.current) {
+        clearTimeout(stationaryTimerRef.current);
+        stationaryTimerRef.current = null;
+      }
+      // Auto-resume if session was stopped by the timer
+      if (autoStoppedRef.current && sessionState === 'idle') {
+        autoStoppedRef.current = false;
+        startPiAssistRef.current();
+      }
+    } else {
+      // Stationary or unknown — start timer if not already running
+      if (!stationaryTimerRef.current) {
+        stationaryTimerRef.current = setTimeout(() => {
+          stationaryTimerRef.current = null;
+          autoStoppedRef.current = true;
+          stopRealtime();
+        }, 5 * 60 * 1000);
+      }
+    }
+
+    return () => {
+      if (stationaryTimerRef.current) {
+        clearTimeout(stationaryTimerRef.current);
+        stationaryTimerRef.current = null;
+      }
+    };
+  }, [walkingAssistMode, walkingState, sessionState, stopRealtime]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
@@ -429,6 +482,8 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       startReplayAssist,
       stopReplayAssist,
       clearHazard,
+      walkingAssistMode,
+      setWalkingAssistMode,
       pickVideo,
       ingestReplayFrame,
     }),
@@ -450,6 +505,7 @@ export function AssistProvider({ children }: { children: React.ReactNode }) {
       startReplayAssist,
       stopPiAssist,
       stopReplayAssist,
+      walkingAssistMode,
     ]
   );
 
