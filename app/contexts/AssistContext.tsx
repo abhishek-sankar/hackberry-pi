@@ -25,6 +25,7 @@ import type {
   SourceMode,
   SpeechState,
 } from "../lib/types";
+import { setAudioModeAsync } from "expo-audio";
 import { usePi } from "./PiContext";
 import { useFrameSource, CapturedFrame } from "./FrameSourceContext";
 
@@ -117,6 +118,15 @@ function parseHazard(text: string, capturedAt: number): HazardState | null {
 export function AssistProvider({ children }: { children: React.ReactNode }) {
   const { sendCommand, walkingState } = usePi();
   const { lastFrame, captureFrame } = useFrameSource();
+
+  // Allow TTS to play even when the phone is on silent (needed so shutter
+  // sound can be silenced via silent switch without killing speech output)
+  useEffect(() => {
+    setAudioModeAsync({
+      playsInSilentMode: true,
+      allowsRecording: true,
+    }).catch((e) => console.warn("[AssistContext] setAudioMode failed:", e));
+  }, []);
   const [sourceMode, setSourceMode] = useState<SourceMode>("pi_live");
   const sourceModeRef = useRef<SourceMode>("pi_live");
   const [sessionState, setSessionState] = useState<SessionState>("idle");

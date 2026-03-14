@@ -53,7 +53,8 @@
           "photosPermission": "Allow $(PRODUCT_NAME) to access videos for replay testing.",
           "microphonePermission": false
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true
