@@ -1,25 +1,15 @@
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
-import { AppCommand, PiEvent, PiStatus } from "../lib/types";
-
-interface DebugEvent {
-  id: number;
-  event: string;
-  payload: Record<string, unknown>;
-  timestamp: number;
-}
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { AppCommand, DebugEvent, PiEvent, PiFrame, PiStatus } from "../lib/types";
 
 interface PiContextValue {
   connected: boolean;
   piAddress: string;
   setPiAddress: (addr: string) => void;
-  lastFrame: string | null;
-  lastAlert: string | null;
-  lastTranscript: string | null;
+  lastFrame: PiFrame | null;
   piStatus: PiStatus | null;
   debugEvents: DebugEvent[];
   latency: number | null;
   sendCommand: (cmd: AppCommand) => void;
-  clearAlert: () => void;
   connect: () => void;
   disconnect: () => void;
 }
@@ -31,18 +21,16 @@ let debugIdCounter = 0;
 export function PiProvider({ children }: { children: React.ReactNode }) {
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shouldReconnect = useRef(false);
   const [piAddress, setPiAddress] = useState("192.168.1.100");
   const [connected, setConnected] = useState(false);
-  const [lastFrame, setLastFrame] = useState<string | null>(null);
-  const [lastAlert, setLastAlert] = useState<string | null>(null);
-  const [lastTranscript, setLastTranscript] = useState<string | null>(null);
+  const [lastFrame, setLastFrame] = useState<PiFrame | null>(null);
   const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [latency, setLatency] = useState<number | null>(null);
 
-  const clearAlert = useCallback(() => setLastAlert(null), []);
-
   const disconnect = useCallback(() => {
+    shouldReconnect.current = false;
     if (reconnectTimer.current) {
       clearTimeout(reconnectTimer.current);
       reconnectTimer.current = null;
@@ -55,14 +43,22 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const connectWs = useCallback(() => {
-    disconnect();
+    shouldReconnect.current = true;
+
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+    }
+    if (ws.current) {
+      ws.current.close();
+      ws.current = null;
+    }
 
     const socket = new WebSocket(`ws://${piAddress}:8765`);
     ws.current = socket;
 
     socket.onopen = () => {
       setConnected(true);
-      console.log("Connected to Pi");
     };
 
     socket.onmessage = (event) => {
@@ -76,20 +72,14 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
 
         switch (data.type) {
           case "frame":
-            setLastFrame(data.data);
-            break;
-          case "alert":
-            setLastAlert(data.text);
-            break;
-          case "transcript":
-            setLastTranscript(data.text);
+            setLastFrame(data);
             break;
           case "status":
             setPiStatus({
               camera: data.camera,
-              openai: data.openai,
-              audio: data.audio,
+              streaming: data.streaming,
               state: data.state,
+              fps: data.fps,
             });
             break;
           case "debug":
@@ -100,36 +90,35 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
                 event: data.event,
                 payload: data.payload,
                 timestamp: data.timestamp,
+                source: "pi",
               },
             ]);
             break;
         }
-      } catch (e) {
-        console.warn("Failed to parse Pi message:", e);
+      } catch (error) {
+        console.warn("Failed to parse Pi message:", error);
       }
     };
 
     socket.onclose = () => {
+      ws.current = null;
       setConnected(false);
-      // Auto-reconnect after 3 seconds
-      reconnectTimer.current = setTimeout(connectWs, 3000);
+      if (shouldReconnect.current) {
+        reconnectTimer.current = setTimeout(connectWs, 3000);
+      }
     };
 
     socket.onerror = () => {
       socket.close();
     };
-  }, [piAddress, disconnect]);
+  }, [piAddress]);
 
-  const sendCommand = useCallback(
-    (cmd: AppCommand) => {
-      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify(cmd));
-      }
-    },
-    []
-  );
+  const sendCommand = useCallback((cmd: AppCommand) => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify(cmd));
+    }
+  }, []);
 
-  // Clean up on unmount
   useEffect(() => {
     return () => {
       disconnect();
@@ -143,13 +132,10 @@ export function PiProvider({ children }: { children: React.ReactNode }) {
         piAddress,
         setPiAddress,
         lastFrame,
-        lastAlert,
-        lastTranscript,
         piStatus,
         debugEvents,
         latency,
         sendCommand,
-        clearAlert,
         connect: connectWs,
         disconnect,
       }}

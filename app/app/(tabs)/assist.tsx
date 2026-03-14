@@ -1,57 +1,74 @@
-import { View, Text, Image, Pressable, StyleSheet, SafeAreaView } from "react-native";
 import { useEffect, useRef } from "react";
+import { Image, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import * as Haptics from "expo-haptics";
+import { useAssist } from "../../contexts/AssistContext";
 import { usePi } from "../../contexts/PiContext";
 
 export default function AssistScreen() {
-  const { lastFrame, lastAlert, lastTranscript, connected, latency, clearAlert, sendCommand } =
-    usePi();
+  const { lastFrame, connected, latency } = usePi();
+  const {
+    lastHazard,
+    lastTranscript,
+    partialTranscript,
+    speechState,
+    sessionState,
+    micState,
+    lastFrameAgeMs,
+    startPiAssist,
+    stopPiAssist,
+    clearHazard,
+  } = useAssist();
   const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Trigger haptic on new alert
   useEffect(() => {
-    if (lastAlert) {
+    if (lastHazard?.isUrgent) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-
-      // Auto-clear after 5 seconds
-      if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
-      alertTimerRef.current = setTimeout(clearAlert, 5000);
+      if (alertTimerRef.current) {
+        clearTimeout(alertTimerRef.current);
+      }
+      alertTimerRef.current = setTimeout(clearHazard, 5000);
     }
+
     return () => {
-      if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+      if (alertTimerRef.current) {
+        clearTimeout(alertTimerRef.current);
+      }
     };
-  }, [lastAlert, clearAlert]);
+  }, [clearHazard, lastHazard]);
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Alert Banner */}
-      {lastAlert && (
-        <Pressable style={styles.alertBanner} onPress={clearAlert}>
-          <Text style={styles.alertIcon}>!</Text>
-          <Text style={styles.alertText}>{lastAlert}</Text>
+      {lastHazard && (
+        <Pressable
+          style={[
+            styles.alertBanner,
+            !lastHazard.isUrgent && styles.crossingBanner,
+          ]}
+          onPress={clearHazard}
+        >
+          <Text style={styles.alertIcon}>
+            {lastHazard.category === "crossing" ? ">" : "!"}
+          </Text>
+          <Text style={styles.alertText}>{lastHazard.text}</Text>
         </Pressable>
       )}
 
-      {/* Camera Preview */}
       <View style={styles.cameraContainer}>
         {lastFrame ? (
           <Image
-            source={{ uri: `data:image/jpeg;base64,${lastFrame}` }}
+            source={{ uri: `data:image/jpeg;base64,${lastFrame.data}` }}
             style={styles.cameraPreview}
             resizeMode="cover"
           />
         ) : (
           <View style={styles.placeholder}>
-            <Text style={styles.placeholderIcon}>
-              {connected ? "..." : "!"}
-            </Text>
+            <Text style={styles.placeholderIcon}>{connected ? "..." : "!"}</Text>
             <Text style={styles.placeholderText}>
               {connected ? "Waiting for camera feed..." : "Not connected to Pi"}
             </Text>
           </View>
         )}
 
-        {/* Latency pill overlay */}
         {latency !== null && (
           <View style={styles.latencyPill}>
             <Text style={styles.latencyText}>{latency}ms</Text>
@@ -59,41 +76,42 @@ export default function AssistScreen() {
         )}
       </View>
 
-      {/* Transcript */}
-      {lastTranscript && (
+      {(lastTranscript || partialTranscript) && (
         <View style={styles.transcriptContainer}>
-          <Text style={styles.transcriptText} numberOfLines={3}>
-            {lastTranscript}
+          <Text style={styles.transcriptText} numberOfLines={4}>
+            {lastTranscript ?? partialTranscript}
           </Text>
         </View>
       )}
 
-      {/* Status Strip */}
       <View style={styles.statusStrip}>
         <View style={styles.statusItem}>
-          <View
-            style={[
-              styles.statusDot,
-              connected ? styles.dotGreen : styles.dotRed,
-            ]}
-          />
-          <Text style={styles.statusLabel}>
-            {connected ? "Connected" : "Offline"}
-          </Text>
+          <View style={[styles.statusDot, connected ? styles.dotGreen : styles.dotRed]} />
+          <Text style={styles.statusLabel}>{connected ? "Connected" : "Offline"}</Text>
         </View>
         <View style={styles.statusItem}>
           <Text style={styles.statusLabel}>
-            {lastFrame ? "Camera Active" : "No Feed"}
+            {lastFrame ? `${lastFrame.width}x${lastFrame.height}` : "No Feed"}
           </Text>
+        </View>
+        <View style={styles.statusItem}>
+          <Text style={styles.statusLabel}>{sessionState}</Text>
         </View>
       </View>
 
-      {/* Controls */}
+      <View style={styles.metaStrip}>
+        <Text style={styles.metaLabel}>Mic: {micState}</Text>
+        <Text style={styles.metaLabel}>Speech: {speechState}</Text>
+        <Text style={styles.metaLabel}>
+          Frame age: {lastFrameAgeMs !== null ? `${lastFrameAgeMs}ms` : "--"}
+        </Text>
+      </View>
+
       <View style={styles.controls}>
-        <Pressable
-          style={styles.stopBtn}
-          onPress={() => sendCommand({ type: "command", action: "stop" })}
-        >
+        <Pressable style={styles.secondaryBtn} onPress={startPiAssist}>
+          <Text style={styles.secondaryBtnText}>Start</Text>
+        </Pressable>
+        <Pressable style={styles.stopBtn} onPress={stopPiAssist}>
           <Text style={styles.stopBtnText}>Stop</Text>
         </Pressable>
       </View>
@@ -114,11 +132,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     gap: 12,
   },
+  crossingBanner: {
+    backgroundColor: "#C67A1E",
+  },
   alertIcon: {
     fontSize: 20,
     fontWeight: "900",
     color: "#fff",
-    backgroundColor: "#B71C1C",
+    backgroundColor: "#00000033",
     width: 32,
     height: 32,
     borderRadius: 16,
@@ -216,11 +237,34 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "500",
   },
+  metaStrip: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    marginHorizontal: 12,
+    marginBottom: 8,
+  },
+  metaLabel: {
+    color: "#6d8d98",
+    fontSize: 12,
+    fontWeight: "600",
+  },
   controls: {
     flexDirection: "row",
     justifyContent: "center",
     padding: 12,
     paddingBottom: 8,
+    gap: 12,
+  },
+  secondaryBtn: {
+    backgroundColor: "#14404d",
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+  },
+  secondaryBtnText: {
+    color: "#c9eef9",
+    fontSize: 16,
+    fontWeight: "700",
   },
   stopBtn: {
     backgroundColor: "#D32F2F",

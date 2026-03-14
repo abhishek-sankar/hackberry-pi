@@ -32,9 +32,18 @@ export default function TabLayout() {
       <Tabs.Screen
         name="assist"
         options={{
-          title: "Assist",
+          title: "Live",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="eye-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="replay"
+        options={{
+          title: "Replay",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="film-outline" size={size} color={color} />
           ),
         }}
       />

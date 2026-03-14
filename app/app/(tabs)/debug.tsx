@@ -1,68 +1,99 @@
-import { View, Text, FlatList, StyleSheet, SafeAreaView } from "react-native";
+import { useMemo, useState } from "react";
+import { FlatList, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { useAssist } from "../../contexts/AssistContext";
 import { usePi } from "../../contexts/PiContext";
 
 export default function DebugScreen() {
   const { debugEvents, connected, latency, piStatus } = usePi();
+  const { appDebugEvents, micState, sessionState, sourceMode, speechState } = useAssist();
+  const mergedEvents = useMemo(
+    () => [...debugEvents, ...appDebugEvents].sort((a, b) => b.timestamp - a.timestamp),
+    [appDebugEvents, debugEvents]
+  );
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const selectedEvent =
+    mergedEvents.find((item) => `${item.source}-${item.id}` === selectedEventId) ?? mergedEvents[0] ?? null;
 
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.header}>Debug Console</Text>
 
-      {/* Stats Row */}
       <View style={styles.statsRow}>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>
-            {connected ? "Yes" : "No"}
-          </Text>
+          <Text style={styles.statValue}>{connected ? "Yes" : "No"}</Text>
           <Text style={styles.statLabel}>Connected</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>
-            {latency !== null ? `${latency}ms` : "--"}
-          </Text>
+          <Text style={styles.statValue}>{latency !== null ? `${latency}ms` : "--"}</Text>
           <Text style={styles.statLabel}>Latency</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{debugEvents.length}</Text>
+          <Text style={styles.statValue}>{mergedEvents.length}</Text>
           <Text style={styles.statLabel}>Events</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>
-            {piStatus?.state ?? "--"}
-          </Text>
+          <Text style={styles.statValue}>{piStatus?.state ?? "--"}</Text>
           <Text style={styles.statLabel}>State</Text>
         </View>
       </View>
 
-      {/* Pi Subsystem Status */}
       {piStatus && (
         <View style={styles.subsystemRow}>
           <Text style={[styles.badge, piStatus.camera && styles.badgeOk]}>
             CAM {piStatus.camera ? "OK" : "OFF"}
           </Text>
-          <Text style={[styles.badge, piStatus.openai && styles.badgeOk]}>
-            AI {piStatus.openai ? "OK" : "OFF"}
+          <Text style={[styles.badge, piStatus.streaming && styles.badgeOk]}>
+            PI {piStatus.streaming ? "LIVE" : "IDLE"}
           </Text>
-          <Text style={[styles.badge, piStatus.audio && styles.badgeOk]}>
-            AUD {piStatus.audio ? "OK" : "OFF"}
+          <Text style={[styles.badge, sessionState === "connected" && styles.badgeOk]}>
+            AI {sessionState.toUpperCase()}
+          </Text>
+          <Text style={[styles.badge, micState === "listening" && styles.badgeOk]}>
+            MIC {micState.toUpperCase()}
+          </Text>
+          <Text style={[styles.badge, speechState === "speaking" && styles.badgeOk]}>
+            VOX {speechState.toUpperCase()}
           </Text>
         </View>
       )}
 
-      {/* Event Log */}
+      <View style={styles.modeRow}>
+        <Text style={styles.modeLabel}>Mode: {sourceMode}</Text>
+      </View>
+
+      {selectedEvent && (
+        <View style={styles.detailCard}>
+          <Text style={styles.detailTitle}>
+            {selectedEvent.event} [{selectedEvent.source}]
+          </Text>
+          <Text style={styles.detailTime}>
+            {new Date(selectedEvent.timestamp * 1000).toLocaleString()}
+          </Text>
+          <Text style={styles.detailPayload}>
+            {JSON.stringify(selectedEvent.payload, null, 2)}
+          </Text>
+        </View>
+      )}
+
       <FlatList
-        data={[...debugEvents].reverse()}
-        keyExtractor={(item) => String(item.id)}
+        data={mergedEvents}
+        keyExtractor={(item) => `${item.source}-${item.id}`}
         renderItem={({ item }) => (
-          <View style={styles.eventRow}>
+          <Pressable
+            style={[
+              styles.eventRow,
+              `${item.source}-${item.id}` === selectedEventId && styles.eventRowSelected,
+            ]}
+            onPress={() => setSelectedEventId(`${item.source}-${item.id}`)}
+          >
             <Text style={styles.eventTime}>
               {new Date(item.timestamp * 1000).toLocaleTimeString()}
             </Text>
             <Text style={styles.eventName}>{item.event}</Text>
-            <Text style={styles.eventPayload} numberOfLines={1}>
-              {JSON.stringify(item.payload)}
+            <Text style={styles.eventPayload} numberOfLines={2}>
+              [{item.source}] {JSON.stringify(item.payload)}
             </Text>
-          </View>
+          </Pressable>
         )}
         style={styles.list}
         ListEmptyComponent={
@@ -120,9 +151,45 @@ const styles = StyleSheet.create({
   },
   subsystemRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     paddingHorizontal: 16,
     gap: 8,
     marginBottom: 12,
+  },
+  modeRow: {
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  modeLabel: {
+    color: "#84b2c2",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  detailCard: {
+    backgroundColor: "#10161a",
+    marginHorizontal: 12,
+    marginBottom: 12,
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#21343e",
+  },
+  detailTitle: {
+    color: "#d5f3ff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  detailTime: {
+    color: "#6d8d98",
+    fontSize: 11,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  detailPayload: {
+    color: "#d4dee2",
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: "monospace",
   },
   badge: {
     backgroundColor: "#2a1a1a",
@@ -150,6 +217,10 @@ const styles = StyleSheet.create({
     padding: 10,
     marginBottom: 4,
     gap: 8,
+  },
+  eventRowSelected: {
+    borderWidth: 1,
+    borderColor: "#4FC3F7",
   },
   eventTime: {
     fontSize: 10,

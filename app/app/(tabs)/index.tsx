@@ -1,13 +1,14 @@
 import {
-  View,
-  Text,
-  TextInput,
   Pressable,
-  StyleSheet,
   SafeAreaView,
   ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { router } from "expo-router";
+import { useAssist } from "../../contexts/AssistContext";
 import { usePi } from "../../contexts/PiContext";
 
 function StatusCard({
@@ -32,11 +33,11 @@ function StatusCard({
 }
 
 export default function SetupScreen() {
-  const { piAddress, setPiAddress, connected, piStatus, connect, sendCommand } =
-    usePi();
+  const { piAddress, setPiAddress, connected, piStatus, connect, disconnect } = usePi();
+  const { hasApiKey, micState, sessionState, startPiAssist } = useAssist();
 
   const handleStart = () => {
-    sendCommand({ type: "command", action: "start" });
+    startPiAssist();
     router.push("/(tabs)/assist");
   };
 
@@ -44,7 +45,7 @@ export default function SetupScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={styles.title}>HackberryPi</Text>
-        <Text style={styles.subtitle}>Navigation Assistant</Text>
+        <Text style={styles.subtitle}>App-Owned Realtime Navigation</Text>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Pi Address</Text>
@@ -60,14 +61,11 @@ export default function SetupScreen() {
               autoCorrect={false}
             />
             <Pressable
-              style={[
-                styles.connectBtn,
-                connected && styles.connectBtnConnected,
-              ]}
-              onPress={connect}
+              style={[styles.connectBtn, connected && styles.connectBtnConnected]}
+              onPress={connected ? disconnect : connect}
             >
               <Text style={styles.connectBtnText}>
-                {connected ? "Connected" : "Connect"}
+                {connected ? "Disconnect" : "Connect"}
               </Text>
             </Pressable>
           </View>
@@ -83,26 +81,41 @@ export default function SetupScreen() {
           <StatusCard
             label="Camera"
             ok={piStatus?.camera ?? false}
-            detail="USB Webcam"
+            detail="USB webcam on the Pi"
           />
           <StatusCard
-            label="OpenAI"
-            ok={piStatus?.openai ?? false}
-            detail="Realtime API"
+            label="Pi Stream"
+            ok={piStatus?.streaming ?? false}
+            detail={piStatus ? `${piStatus.fps.toFixed(1)} fps target` : "Waiting for status"}
           />
           <StatusCard
-            label="Audio Output"
-            ok={piStatus?.audio ?? false}
-            detail="Bluetooth"
+            label="Realtime Key"
+            ok={hasApiKey}
+            detail={hasApiKey ? sessionState : "Set EXPO_PUBLIC_OPENAI_API_KEY"}
+          />
+          <StatusCard
+            label="Voice Input"
+            ok={micState === "ready" || micState === "listening"}
+            detail={micState}
           />
         </View>
 
         <Pressable
-          style={[styles.startBtn, !connected && styles.startBtnDisabled]}
+          style={[
+            styles.startBtn,
+            (!connected || !hasApiKey) && styles.startBtnDisabled,
+          ]}
           onPress={handleStart}
-          disabled={!connected}
+          disabled={!connected || !hasApiKey}
         >
           <Text style={styles.startBtnText}>Start Live Assist</Text>
+        </Pressable>
+
+        <Pressable
+          style={styles.secondaryBtn}
+          onPress={() => router.push("/(tabs)/replay" as never)}
+        >
+          <Text style={styles.secondaryBtnText}>Open Replay Lab</Text>
         </Pressable>
       </ScrollView>
     </SafeAreaView>
@@ -229,5 +242,20 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 20,
     fontWeight: "800",
+  },
+  secondaryBtn: {
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: "#33515d",
+    backgroundColor: "#10181c",
+    marginTop: 12,
+  },
+  secondaryBtnText: {
+    color: "#9fdcf5",
+    fontSize: 16,
+    fontWeight: "600",
+    textAlign: "center",
   },
 });

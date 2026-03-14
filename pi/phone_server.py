@@ -8,7 +8,7 @@ class PhoneServer:
     def __init__(self):
         self.clients = set()
         self.server = None
-        self.on_command = None  # callback(action: str) set by orchestrator
+        self.on_command = None  # callback(action: str, payload: dict) set by orchestrator
 
     async def start(self, host: str, port: int):
         self.server = await websockets.serve(
@@ -27,7 +27,7 @@ class PhoneServer:
                 try:
                     data = json.loads(message)
                     if data.get("type") == "command" and self.on_command:
-                        self.on_command(data.get("action", ""))
+                        self.on_command(data.get("action", ""), data)
                 except json.JSONDecodeError:
                     pass
         except websockets.ConnectionClosed:
@@ -45,11 +45,25 @@ class PhoneServer:
             return_exceptions=True,
         )
 
-    async def send_frame(self, jpeg_b64: str):
+    async def send_frame(
+        self,
+        jpeg_b64: str,
+        *,
+        frame_id: int,
+        captured_at: float,
+        width: int,
+        height: int,
+        size_bytes: int,
+    ):
         await self.broadcast({
             "type": "frame",
             "data": jpeg_b64,
             "timestamp": time.time(),
+            "frameId": frame_id,
+            "capturedAt": captured_at,
+            "width": width,
+            "height": height,
+            "sizeBytes": size_bytes,
         })
 
     async def send_alert(self, text: str):

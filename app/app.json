@@ -13,7 +13,13 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone for hands-free navigation help.",
+        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to recognize your speech for hands-free follow-up questions.",
+        "NSPhotoLibraryUsageDescription": "HackberryPi needs photo library access so you can test navigation guidance with saved videos."
+      },
+      "bundleIdentifier": "com.anonymous.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +28,8 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": []
     },
     "web": {
       "bundler": "metro",
@@ -30,7 +37,22 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-video",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone for hands-free navigation help.",
+          "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to recognize your speech for hands-free follow-up questions."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access videos for replay testing.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
